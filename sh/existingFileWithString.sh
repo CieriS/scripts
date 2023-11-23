@@ -26,7 +26,7 @@ findOccurenceInDirectoryFiles() {
     echo -e "\nsono stati analizzati $countAllFiles documenti e $countCorrespondentFiles sono quelli in cui è stata trovata una corrispondenza"
 }
 
-findOccurenceInDirectoryFiles "\"allowResizing\":true," ".\..\..\..\Cieri\Job\Projects\ravenRun\raven_delivery_server\docs\consolidation\src/main\resources/domains\consolidation/porting-step"
+findOccurenceInDirectoryFiles "" ""
 
 sleep 3
 exit
