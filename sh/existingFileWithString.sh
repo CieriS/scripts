@@ -2,7 +2,9 @@
 
 findOccurenceInDirectoryFiles() {
     local stringToFind="$1" 
-    local directorySearchedFor=$(echo "$2" | tr '\\' '/')
+    local directorySearchedFor
+    # shellcheck disable=SC1003 # a literal backslash, not an escaped quote
+    directorySearchedFor=$(echo "$2" | tr '\\' '/')
 
     echo -e "stringa da cercare: $stringToFind \n"
     echo -e "directory di ricerca: $directorySearchedFor/*\n"
