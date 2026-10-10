@@ -82,8 +82,9 @@ function loadScript({
   const page = { storage, requests: [], downloads: [], opened: [], messages: [], tables: [], alerts: [] };
   let popupsLeft = popups;
 
-  const record = (level) => (...args) =>
+  const record = (level) => (...args) => {
     page.messages.push({ level, text: args.map(String).join(" ") });
+  };
 
   const element = () => ({
     style: {},
@@ -140,7 +141,12 @@ function loadScript({
       page.opened.push(url);
       return popupsLeft-- > 0 ? {} : null;
     },
-    setTimeout,
+    // Long timers (the script revokes download URLs after 5s) must not keep the test run alive.
+    setTimeout: (fn, ms) => {
+      const timer = setTimeout(fn, ms);
+      if (ms >= 1000) timer.unref();
+      return timer;
+    },
     clearTimeout,
     AbortController,
     URLSearchParams,

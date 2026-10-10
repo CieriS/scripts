@@ -28,6 +28,12 @@
  *   IU.stop()        interrompe uno scan in corso
  *   IU.reset()       cancella tutto lo stato salvato
  *
+ * AFFIDABILITÀ — Instagram a volte restituisce liste più corte del vero. Lo
+ * scan confronta le liste lette con i contatori del profilo: se mancano
+ * account lo dice ("liste incomplete") e segna lo snapshot, così diff() avvisa
+ * che il confronto può contenere falsi unfollow. Gli snapshot sono separati
+ * per account: cambiando account nello stesso browser non si mescolano.
+ *
  * CADENZA — diff() confronta con lo scan precedente. Uno scan a settimana è
  * più che sufficiente: più spesso non aggiunge informazione, aggiunge solo
  * richieste. Il primo scan non produce diff, serve come riferimento.
@@ -49,7 +55,12 @@
     MAX_RETRIES: 4,
     BACKOFF_BASE: 4_000,
     REQUEST_TIMEOUT: 30_000,
-    MAX_HISTORY: 8, // snapshot conservati
+    MAX_HISTORY: 8, // snapshot conservati per account
+    LIST_GAP_MIN: 3_000, // pausa fra la lista "following" e la lista "followers"
+    LIST_GAP_MAX: 6_000,
+    CHECKPOINT_TTL: 30 * 60_000, // uno scan interrotto da più tempo riparte da zero
+    COUNT_TOLERANCE: 0.02, // scarto ammesso fra lista letta e contatore del profilo…
+    COUNT_TOLERANCE_MIN: 3, // …e suo minimo in account (i contatori contano anche i disattivati)
   };
 
   const ORIGIN = "https://www.instagram.com";
@@ -108,7 +119,9 @@
   /* ========================================================================
    * RETE — solo GET. Nessun metodo, nessun body, nessun csrftoken.
    * ====================================================================== */
-  async function igFetch(path) {
+  // soft: una risposta inattesa restituisce null invece di fermare tutto
+  // (per le richieste facoltative). I segnali di blocco fermano comunque.
+  async function igFetch(path, { soft = false } = {}) {
     const url = ORIGIN + path;
 
     for (let attempt = 0; attempt <= CONFIG.MAX_RETRIES; attempt++) {
@@ -159,10 +172,14 @@
         continue;
       }
 
-      if (!res.ok) throw new FatalError(`HTTP ${res.status} inatteso`);
+      if (!res.ok) {
+        if (soft) return null;
+        throw new FatalError(`HTTP ${res.status} inatteso`);
+      }
 
       try { return JSON.parse(body); }
       catch {
+        if (soft) return null;
         throw new FatalError(
           "risposta non-JSON: di solito è una pagina di verifica. Apri instagram.com e controlla."
         );
@@ -174,14 +191,35 @@
   /* ========================================================================
    * SCAN
    * ====================================================================== */
+  /**
+   * Contatori del profilo: servono solo a capire se le liste lette sono
+   * complete. Se la richiesta non riesce lo scan prosegue, senza verifica.
+   */
+  async function fetchExpected(userId) {
+    const data = await igFetch(`/api/v1/users/${userId}/info/`, { soft: true });
+    const u = data?.user;
+    if (!Number.isFinite(u?.follower_count) || !Number.isFinite(u?.following_count)) return null;
+    return { following: u.following_count, followers: u.follower_count };
+  }
+
+  /** true se la lista letta è più corta del contatore, oltre lo scarto ammesso. */
+  const isShort = (got, expected) =>
+    got < expected - Math.max(CONFIG.COUNT_TOLERANCE_MIN, Math.ceil(expected * CONFIG.COUNT_TOLERANCE));
+
   async function fetchList(userId, kind, onProgress) {
     const ckKey = `${K_CK}_${kind}`;
-    const ck = store.get(ckKey, null);
-    let users = ck?.users || [];
+    let ck = store.get(ckKey, null);
+    // Riprendere uno scan interrotto ha senso solo a caldo e sullo stesso
+    // account: altrimenti si mescolano liste di momenti (o persone) diversi.
+    const fresh = ck && ck.uid === userId && ck.cursor && Date.now() - ck.t < CONFIG.CHECKPOINT_TTL;
+    if (ck && !fresh) { store.del(ckKey); ck = null; }
+
+    // Per id: l'API ripete alcuni utenti fra una pagina e la successiva.
+    const byId = new Map((ck?.users || []).map((u) => [u.id, u]));
     let cursor = ck?.cursor || null;
     let page = 0;
 
-    if (users.length) log(`${kind}: riprendo da ${users.length}`);
+    if (byId.size) log(`${kind}: riprendo da ${byId.size}`);
 
     while (true) {
       if (ABORT) throw new AbortError("interrotto");
@@ -193,8 +231,10 @@
       const batch = Array.isArray(data.users) ? data.users : [];
 
       for (const u of batch) {
-        users.push({
-          id: String(u.pk ?? u.pk_id ?? u.id ?? ""),
+        const id = String(u.pk ?? u.pk_id ?? u.id ?? "");
+        if (!id || byId.has(id)) continue;
+        byId.set(id, {
+          id,
           username: u.username,
           full_name: u.full_name || "",
           is_private: !!u.is_private,
@@ -204,8 +244,8 @@
 
       cursor = data.next_max_id ? String(data.next_max_id) : null;
       page++;
-      onProgress?.(kind, users.length);
-      store.set(ckKey, { users, cursor });
+      onProgress?.(kind, byId.size);
+      store.set(ckKey, { uid: userId, t: Date.now(), users: [...byId.values()], cursor });
 
       if (!cursor || batch.length === 0) break;
 
@@ -218,29 +258,62 @@
     }
 
     store.del(ckKey);
-    return users;
+    return [...byId.values()];
   }
 
-  /** Salva lo snapshot in forma compatta, per non saturare localStorage. */
-  function pushSnapshot(following, followers) {
-    const compact = (list) => list.map((u) => [u.id, u.username]);
-    const snaps = store.get(K_SNAPS, []);
-    snaps.push({ t: new Date().toISOString(), fg: compact(following), fr: compact(followers) });
+  /* ========================================================================
+   * SNAPSHOT — uno per scan, etichettato con l'account che l'ha prodotto
+   * ====================================================================== */
+  // Gli snapshot senza etichetta (versioni precedenti) valgono per chi è loggato.
+  const isMine = (uid) => (s) => !s.u || s.u === uid;
+  const mySnaps = (uid = getCookie("ds_user_id")) => store.get(K_SNAPS, []).filter(isMine(uid));
 
-    while (snaps.length > CONFIG.MAX_HISTORY) snaps.shift();
+  /** Salva lo snapshot in forma compatta, per non saturare localStorage. */
+  function pushSnapshot(uid, t, following, followers, partial) {
+    const compact = (list) => list.map((u) => [u.id, u.username]);
+    const all = store.get(K_SNAPS, []);
+    const mine = all.filter(isMine(uid));
+    const others = all.filter((s) => !isMine(uid)(s));
+
+    mine.forEach((s) => { s.u = uid; });
+    const snap = { t, u: uid, fg: compact(following), fr: compact(followers) };
+    if (partial) snap.p = 1; // liste incomplete: il confronto con questo scan è inaffidabile
+    mine.push(snap);
+    while (mine.length > CONFIG.MAX_HISTORY) mine.shift();
+
     // Se la quota esplode, sacrifica gli snapshot più vecchi.
-    while (snaps.length > 1 && !store.set(K_SNAPS, snaps)) snaps.shift();
-    if (snaps.length === 1) store.set(K_SNAPS, snaps);
-    return snaps;
+    const next = [...others, ...mine];
+    let saved = store.set(K_SNAPS, next);
+    while (!saved && next.length > 1) { next.shift(); saved = store.set(K_SNAPS, next); }
+    return { saved, count: saved ? next.filter(isMine(uid)).length : 0 };
+  }
+
+  /** Le tre liste del report, a partire dalle due liste lette. */
+  function buildResult(scannedAt, following, followers, extra = {}) {
+    const frIds = new Set(followers.map((u) => u.id));
+    const fgIds = new Set(following.map((u) => u.id));
+    return {
+      scannedAt,
+      counts: { following: following.length, followers: followers.length },
+      expected: null,
+      partial: false,
+      ...extra,
+      notFollowingBack: following.filter((u) => !frIds.has(u.id)),
+      youDontFollowBack: followers.filter((u) => !fgIds.has(u.id)),
+      mutual: following.filter((u) => frIds.has(u.id)),
+    };
   }
 
   let LAST = null; // ultimo risultato completo, in memoria
+  let RUNNING = false;
 
   async function scan() {
-    ABORT = false;
+    if (RUNNING) return warn("uno scan è già in corso. IU.stop() per interromperlo.");
     const userId = getCookie("ds_user_id");
     if (!userId) return err("cookie ds_user_id assente. Sei loggato su instagram.com?");
 
+    RUNNING = true;
+    ABORT = false;
     ui.show();
     ui.status("scan — sola lettura");
     const t0 = Date.now();
@@ -248,52 +321,45 @@
     try {
       const onProgress = (kind, n) => ui.status(`${kind}: ${n}`);
 
+      const expected = await fetchExpected(userId);
+      if (expected) await waitFor(rand(CONFIG.DELAY_MIN, CONFIG.DELAY_MAX), "");
+      else warn("non riesco a leggere i contatori del profilo: non posso verificare che le liste siano complete.");
+
       // L'API attuale non espone follows_viewer sulla lista following:
       // servono entrambe le liste e una differenza insiemistica.
       const following = await fetchList(userId, "following", onProgress);
-      await waitFor(rand(3000, 6000), "");
+      await waitFor(rand(CONFIG.LIST_GAP_MIN, CONFIG.LIST_GAP_MAX), "");
       const followers = await fetchList(userId, "followers", onProgress);
 
-      const frIds = new Set(followers.map((u) => u.id));
-      const fgIds = new Set(following.map((u) => u.id));
+      const partial = !!expected &&
+        (isShort(following.length, expected.following) || isShort(followers.length, expected.followers));
 
-      const snaps = pushSnapshot(following, followers);
-
-      LAST = {
-        scannedAt: new Date().toISOString(),
-        counts: { following: following.length, followers: followers.length },
-        notFollowingBack: following.filter((u) => !frIds.has(u.id)),
-        youDontFollowBack: followers.filter((u) => !fgIds.has(u.id)),
-        mutual: following.filter((u) => frIds.has(u.id)),
-      };
+      const scannedAt = new Date().toISOString();
+      const { saved, count } = pushSnapshot(userId, scannedAt, following, followers, partial);
+      LAST = buildResult(scannedAt, following, followers, { expected, partial });
 
       ui.status(`fatto in ${Math.round((Date.now() - t0) / 1000)}s`);
-      log(`Scan completato. Snapshot salvati: ${snaps.length}/${CONFIG.MAX_HISTORY}`);
+      if (saved) log(`Scan completato. Snapshot salvati: ${count}/${CONFIG.MAX_HISTORY}`);
+      else warn("Scan completato, ma lo snapshot NON è stato salvato: spazio del browser esaurito. " +
+                "Esporta con IU.json(); il prossimo IU.diff() non vedrà questo scan.");
 
       report();
-      if (snaps.length >= 2) { console.log(""); diff(); }
-      else log("Primo snapshot: al prossimo scan IU.diff() ti dirà chi ti ha tolto il follow.");
+      if (count >= 2) { console.log(""); diff(); }
+      else if (saved) log("Primo snapshot: al prossimo scan IU.diff() ti dirà chi ti ha tolto il follow.");
 
       return LAST;
     } catch (e) {
       handleError(e);
+    } finally {
+      RUNNING = false;
     }
   }
 
   /* ========================================================================
    * DIFF — la funzione che risponde davvero a "chi mi ha unfollowato"
    * ====================================================================== */
-  function diff(olderIndex = -2, newerIndex = -1) {
-    const snaps = store.get(K_SNAPS, []);
-    if (snaps.length < 2) {
-      warn(`servono almeno 2 scan per un confronto (ne hai ${snaps.length}). Rilancia IU.scan() fra qualche giorno.`);
-      return null;
-    }
-
-    const A = snaps.at(olderIndex);
-    const B = snaps.at(newerIndex);
-    if (!A || !B) return warn("indici snapshot non validi");
-
+  /** Confronto fra due snapshot (A più vecchio di B). Nessun effetto collaterale. */
+  function computeDiff(A, B) {
     const nameOf = new Map([...A.fg, ...A.fr, ...B.fg, ...B.fr]);
     const setOf = (pairs) => new Set(pairs.map((p) => p[0]));
 
@@ -311,23 +377,50 @@
     // Se sparisce solo dai follower e tu continui a seguirla, ti ha tolto il follow.
     const unfollowedYou = [];
     const vanished = [];
+    const vanishedIds = new Set();
     for (const id of goneFromFollowers) {
-      if (aFg.has(id) && !bFg.has(id)) vanished.push(mk(id));
+      if (aFg.has(id) && !bFg.has(id)) { vanished.push(mk(id)); vanishedIds.add(id); }
       else unfollowedYou.push(mk(id));
     }
 
-    const res = {
+    return {
       from: A.t,
       to: B.t,
+      // Uno dei due scan era incompleto: chi manca dalla lista sembra un unfollow.
+      unreliable: !!(A.p || B.p),
       unfollowedYou,
       vanished,
       newFollowers: [...bFr].filter((id) => !aFr.has(id)).map(mk),
-      youUnfollowed: [...aFg].filter((id) => !bFg.has(id) && !vanished.some((v) => v.id === id)).map(mk),
+      youUnfollowed: [...aFg].filter((id) => !bFg.has(id) && !vanishedIds.has(id)).map(mk),
       youFollowed: [...bFg].filter((id) => !aFg.has(id)).map(mk),
       delta: { followers: bFr.size - aFr.size, following: bFg.size - aFg.size },
     };
+  }
 
-    const keep = new Set(store.get(K_KEEP, []).map(norm));
+  /** Confronto fra gli ultimi due snapshot dell'account, o null se non bastano. */
+  function lastDiff() {
+    const s = mySnaps();
+    return s.length >= 2 ? computeDiff(s.at(-2), s.at(-1)) : null;
+  }
+
+  function diff(olderIndex = -2, newerIndex = -1) {
+    const snaps = mySnaps();
+    if (snaps.length < 2) {
+      warn(`servono almeno 2 scan per un confronto (ne hai ${snaps.length}). Rilancia IU.scan() fra qualche giorno.`);
+      return null;
+    }
+
+    let A = snaps.at(olderIndex);
+    let B = snaps.at(newerIndex);
+    if (!A || !B || A === B) {
+      warn("indici snapshot non validi: IU.history() mostra quelli disponibili");
+      return null;
+    }
+    if (A.t > B.t) [A, B] = [B, A]; // sempre dal più vecchio al più recente
+
+    const res = computeDiff(A, B);
+
+    const keep = keepSet();
     const show = (label, list, color) => {
       const f = list.filter((u) => !keep.has(norm(u.username)));
       if (!f.length) return;
@@ -336,6 +429,8 @@
     };
 
     console.group(`%c[IU] Confronto  ${fmtDate(A.t)}  →  ${fmtDate(B.t)}`, "color:#4ea1ff;font-weight:bold");
+    if (res.unreliable)
+      warn("⚠️ uno dei due scan era incompleto: questo confronto può contenere falsi \"ti hanno tolto il follow\".");
     log(`follower: ${res.delta.followers >= 0 ? "+" : ""}${res.delta.followers}   ` +
         `seguiti: ${res.delta.following >= 0 ? "+" : ""}${res.delta.following}`);
     show("❌ TI HANNO TOLTO IL FOLLOW", res.unfollowedYou, "#e05252");
@@ -370,6 +465,10 @@
     console.group(`%c[IU] Fotografia — ${fmtDate(r.scannedAt)}`, "color:#4ea1ff;font-weight:bold");
     log(`segui ${r.counts.following} · ti seguono ${r.counts.followers} · reciproci ${r.mutual.length}`);
     log(`non ti seguono: ${r.notFollowingBack.length}${kept ? ` (${kept} in "tengo")` : ""}`);
+    if (r.partial)
+      warn(`⚠️ liste incomplete: letti ${r.counts.following}/${r.expected.following} seguiti e ` +
+           `${r.counts.followers}/${r.expected.followers} follower. Instagram a volte tronca le liste: ` +
+           `chi manca risulta "non ti segue" anche se ti segue. Riprova fra qualche ora.`);
     console.table(
       targets.slice(0, 200).map((u) => ({
         username: u.username,
@@ -415,25 +514,15 @@
     const r = requireScan();
     if (!r) return;
     download(`ig-${Date.now()}.json`,
-      JSON.stringify({ ...r, diff: store.get(K_SNAPS, []).length >= 2 ? diffSilent() : null }, null, 2),
+      JSON.stringify({ ...r, diff: lastDiff() }, null, 2),
       "application/json");
-  }
-
-  function diffSilent() {
-    const snaps = store.get(K_SNAPS, []);
-    if (snaps.length < 2) return null;
-    const saved = console.group, savedT = console.table, savedL = console.log;
-    console.group = console.table = console.log = () => {};
-    let r;
-    try { r = diff(); } finally { console.group = saved; console.table = savedT; console.log = savedL; }
-    return r;
   }
 
   /** Report HTML autonomo: apri il file e lavora la lista a mano, cliccando. */
   function html() {
     const r = requireScan();
     if (!r) return;
-    const d = diffSilent();
+    const d = lastDiff();
     const targets = notKept(r.notFollowingBack);
 
     const card = (u, extra = "") =>
@@ -470,6 +559,7 @@ a{color:var(--acc);text-decoration:none;font-weight:600}a:hover{text-decoration:
 </style></head><body>
 <h1>Chi non ti segue</h1>
 <div class="sub">Scan del ${escapeHtml(fmtDate(r.scannedAt))}${d ? ` · confronto dal ${escapeHtml(fmtDate(d.from))}` : ""}</div>
+${r.partial || d?.unreliable ? `<div class="sub">⚠️ Liste incomplete in questo scan o nel precedente: l'elenco può contenere persone che in realtà ti seguono.</div>` : ""}
 <div class="stats">
 <div class="stat"><b>${r.counts.following}</b><span>segui</span></div>
 <div class="stat"><b>${r.counts.followers}</b><span>ti seguono</span></div>
@@ -522,10 +612,11 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
   }
 
   function history() {
-    const s = store.get(K_SNAPS, []);
+    const s = mySnaps();
     if (!s.length) return log("nessuno snapshot");
     console.table(s.map((x, i) => ({
       "#": i - s.length, quando: fmtDate(x.t), segui: x.fg.length, "ti seguono": x.fr.length,
+      completo: x.p ? "no" : "sì",
     })));
     log("usa IU.diff(-3,-1) per confrontare snapshot non adiacenti");
     return s.map((x) => x.t);
@@ -583,7 +674,7 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
     get last() { return LAST; },
   };
 
-  const n = store.get(K_SNAPS, []).length;
+  const n = mySnaps().length;
   console.log(
     `%cIU pronto — sola lettura.%c  IU.scan() per iniziare.` +
     (n >= 2 ? `\n${n} snapshot salvati: IU.diff() per vedere chi ti ha tolto il follow.`
