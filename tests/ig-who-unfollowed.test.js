@@ -474,3 +474,125 @@ test("json: exports the result together with the last comparison", async () => {
   assert.equal(exported.counts.followers, 1);
   assert.equal(page.messages.length, messagesBefore + 1, "only the 'downloaded' line is printed");
 });
+
+/* ---------------------------------------------------------------- open --- */
+
+const profile = (url) => url.split("/")[3];
+
+test("open: each call continues with the next profiles instead of reopening the same", async () => {
+  const instagram = new FakeInstagram({ following: range(1, 5), followers: [] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+
+  page.IU.open(2);
+  page.IU.open(2);
+  page.IU.open(2);
+  assert.deepEqual(page.opened.map(profile), ["user1", "user2", "user3", "user4", "user5"]);
+
+  page.IU.open(2);
+  assert.equal(page.opened.length, 5);
+  assert.ok(page.said("warn", /già aperti tutti/));
+});
+
+test("open: a new scan starts again from the top of the list", async () => {
+  const instagram = new FakeInstagram({ following: range(1, 3), followers: [] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  page.IU.open(1);
+  await page.IU.scan();
+  page.IU.open(1);
+
+  assert.deepEqual(page.opened.map(profile), ["user1", "user1"]);
+});
+
+test("open: tabs blocked by the browser are reported and retried next time", async () => {
+  const instagram = new FakeInstagram({ following: range(1, 3), followers: [] });
+  const page = loadScript({ instagram, popups: 1 });
+  await page.IU.scan();
+
+  page.IU.open(3);
+  assert.ok(page.said("warn", /ha bloccato 2 schede/));
+  assert.ok(page.said("log", /aperti 1 profili, ne restano 2/));
+
+  page.IU.open(1);
+  assert.equal(profile(page.opened.at(-1)), "user2", "the blocked profile is tried again");
+});
+
+test("open: skips kept accounts and never opens more than ten tabs", async () => {
+  const instagram = new FakeInstagram({ following: range(1, 15), followers: [] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  page.IU.keep("user1");
+  page.IU.open(50);
+
+  assert.equal(page.opened.length, 10);
+  assert.equal(profile(page.opened[0]), "user2");
+});
+
+test("open: nothing to open is said, not silently ignored", async () => {
+  const instagram = new FakeInstagram({ following: [user(1)], followers: [user(1)] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  page.IU.open();
+
+  assert.equal(page.opened.length, 0);
+  assert.ok(page.said("warn", /niente da aprire/));
+});
+
+/* -------------------------------------------------------------- reload --- */
+
+test("reload: the last scan is available again without new requests", async () => {
+  const instagram = new FakeInstagram({
+    following: [user(1, "alice", { full_name: "Alice" }), user(2)],
+    followers: [user(2), user(3)],
+  });
+  const before = loadScript({ instagram });
+  await before.IU.scan();
+
+  const after = loadScript({ instagram, storage: before.storage });
+  assert.deepEqual(names(after.IU.report()), ["alice"]);
+  assert.equal(after.IU.last.restored, true);
+  assert.deepEqual(names(after.IU.last.youDontFollowBack), ["user3"]);
+  assert.equal(after.requests.length, 0);
+  assert.ok(after.said("log", /ricostruita dall'ultimo snapshot/));
+
+  after.IU.csv();
+  assert.ok(after.downloads[0].text.includes('"non_ti_segue","alice","","","","https://www.instagram.com/alice/"'));
+});
+
+test("reload: an incomplete scan is still flagged after being restored", async () => {
+  const instagram = new FakeInstagram({ following: range(1, 40), followers: range(1, 40) });
+  instagram.override = (url) =>
+    url.pathname.includes("/followers/")
+      ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
+      : null;
+  const before = loadScript({ instagram });
+  await before.IU.scan();
+
+  const after = loadScript({ instagram, storage: before.storage });
+  after.IU.report();
+  assert.equal(after.IU.last.partial, true);
+  assert.ok(after.said("warn", /liste incomplete/));
+});
+
+test("reload: another account does not see the previous one's scan", async () => {
+  const instagram = new FakeInstagram({ following: [user(1)], followers: [] });
+  const before = loadScript({ instagram, userId: "100" });
+  await before.IU.scan();
+
+  const after = loadScript({ instagram, userId: "200", storage: before.storage });
+  assert.equal(after.IU.last, null);
+  assert.equal(after.IU.report(), undefined);
+  assert.ok(after.said("warn", /IU\.scan\(\)/));
+});
+
+test("reset: clears snapshots, keep list and the restored result", async () => {
+  const instagram = new FakeInstagram({ following: [user(1)], followers: [] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  page.IU.keep("user1");
+  page.IU.reset();
+
+  assert.equal(page.IU.last, null);
+  assert.equal(page.storage.size, 0);
+});

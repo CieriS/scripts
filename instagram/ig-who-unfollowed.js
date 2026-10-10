@@ -16,11 +16,11 @@
  * COMANDI
  *   IU.scan()        analizza e salva uno snapshot
  *   IU.diff()        ⭐ chi ti ha tolto il follow dall'ultimo scan
- *   IU.report()      chi non ti segue (fotografia attuale)
+ *   IU.report()      chi non ti segue (ultimo scan, anche dopo un reload)
  *   IU.html()        report HTML cliccabile da aprire e lavorare
  *   IU.csv()         export CSV
  *   IU.json()        export JSON completo
- *   IU.open(n)       apre n profili in tab, per agire a mano
+ *   IU.open(n)       apre i prossimi n profili in tab (max 10), per agire a mano
  *   IU.keep(...u)    "questi li tengo comunque" — spariscono dai report
  *   IU.unkeep(...u)  rimuove dalla lista "tengo"
  *   IU.keeplist()    mostra la lista "tengo"
@@ -304,7 +304,19 @@
     };
   }
 
+  /**
+   * Ricostruisce il risultato da uno snapshot salvato, così dopo un reload
+   * report ed export funzionano senza un nuovo scan (cioè senza altre richieste).
+   * Lo snapshot è compatto: nome, privato e verificato non ci sono.
+   */
+  function fromSnapshot(snap) {
+    const expand = (pairs) =>
+      pairs.map(([id, username]) => ({ id, username, full_name: "", is_private: null, is_verified: null }));
+    return buildResult(snap.t, expand(snap.fg), expand(snap.fr), { partial: !!snap.p, restored: true });
+  }
+
   let LAST = null; // ultimo risultato completo, in memoria
+  const OPENED = new Set(); // id dei profili già aperti con open() per questo risultato
   let RUNNING = false;
 
   async function scan() {
@@ -337,6 +349,7 @@
       const scannedAt = new Date().toISOString();
       const { saved, count } = pushSnapshot(userId, scannedAt, following, followers, partial);
       LAST = buildResult(scannedAt, following, followers, { expected, partial });
+      OPENED.clear();
 
       ui.status(`fatto in ${Math.round((Date.now() - t0) / 1000)}s`);
       if (saved) log(`Scan completato. Snapshot salvati: ${count}/${CONFIG.MAX_HISTORY}`);
@@ -466,9 +479,16 @@
     log(`segui ${r.counts.following} · ti seguono ${r.counts.followers} · reciproci ${r.mutual.length}`);
     log(`non ti seguono: ${r.notFollowingBack.length}${kept ? ` (${kept} in "tengo")` : ""}`);
     if (r.partial)
-      warn(`⚠️ liste incomplete: letti ${r.counts.following}/${r.expected.following} seguiti e ` +
-           `${r.counts.followers}/${r.expected.followers} follower. Instagram a volte tronca le liste: ` +
-           `chi manca risulta "non ti segue" anche se ti segue. Riprova fra qualche ora.`);
+      warn("⚠️ liste incomplete" +
+           (r.expected
+             ? `: letti ${r.counts.following}/${r.expected.following} seguiti e ` +
+               `${r.counts.followers}/${r.expected.followers} follower`
+             : "") +
+           `. Instagram a volte tronca le liste: chi manca risulta "non ti segue" anche se ti segue. ` +
+           `Riprova fra qualche ora.`);
+    if (r.restored)
+      log("fotografia ricostruita dall'ultimo snapshot salvato: nome, privato e verificato " +
+          "tornano disponibili con un nuovo IU.scan().");
     console.table(
       targets.slice(0, 200).map((u) => ({
         username: u.username,
@@ -582,10 +602,22 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
   function open(n = 5) {
     const r = requireScan();
     if (!r) return;
-    const slice = notKept(r.notFollowingBack).slice(0, Math.min(n, 10));
-    if (!slice.length) return warn("niente da aprire");
-    log(`apro ${slice.length} profili — unfollow a mano in ogni tab`);
-    slice.forEach((u) => window.open(`${ORIGIN}/${u.username}/`, "_blank"));
+    // Solo quelli non ancora aperti: chiamate successive proseguono nella lista.
+    const todo = notKept(r.notFollowingBack).filter((u) => !OPENED.has(u.id));
+    const slice = todo.slice(0, Math.max(0, Math.min(n, 10)));
+    if (!slice.length)
+      return warn(OPENED.size ? "niente da aprire: li hai già aperti tutti" : "niente da aprire");
+
+    let blocked = 0;
+    for (const u of slice) {
+      if (window.open(`${ORIGIN}/${u.username}/`, "_blank")) OPENED.add(u.id);
+      else blocked++;
+    }
+    const done = slice.length - blocked;
+    log(`aperti ${done} profili, ne restano ${todo.length - done} — unfollow a mano in ogni tab`);
+    if (blocked)
+      warn(`il browser ha bloccato ${blocked} schede: consenti i popup per instagram.com ` +
+           `(icona nella barra degli indirizzi) e rilancia IU.open().`);
   }
 
   /* ========================================================================
@@ -668,13 +700,15 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
     stop: () => { ABORT = true; log("interruzione richiesta"); },
     reset: () => {
       [K_SNAPS, K_KEEP, `${K_CK}_following`, `${K_CK}_followers`].forEach(store.del);
-      LAST = null; ui.hide(); log("stato cancellato");
+      LAST = null; OPENED.clear(); ui.hide(); log("stato cancellato");
     },
     config: CONFIG,
     get last() { return LAST; },
   };
 
-  const n = mySnaps().length;
+  const mine = mySnaps();
+  const n = mine.length;
+  if (n) LAST = fromSnapshot(mine.at(-1));
   console.log(
     `%cIU pronto — sola lettura.%c  IU.scan() per iniziare.` +
     (n >= 2 ? `\n${n} snapshot salvati: IU.diff() per vedere chi ti ha tolto il follow.`
