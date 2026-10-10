@@ -396,7 +396,10 @@
   function csv() {
     const r = requireScan();
     if (!r) return;
-    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    // Excel e Numbers leggono come formula una cella che inizia con = + - @
+    // (o tab/a capo): un apostrofo davanti la fa restare testo.
+    const safe = (v) => { const s = String(v ?? ""); return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s; };
+    const esc = (v) => `"${safe(v).replace(/"/g, '""')}"`;
     const rows = [["categoria", "username", "nome", "privato", "verificato", "url"].join(",")];
     const add = (c, l) => l.forEach((u) =>
       rows.push([c, u.username, u.full_name, u.is_private, u.is_verified, `${ORIGIN}/${u.username}/`].map(esc).join(","))
@@ -404,7 +407,8 @@
     add("non_ti_segue", r.notFollowingBack);
     add("non_ricambi", r.youDontFollowBack);
     add("reciproco", r.mutual);
-    download(`ig-${Date.now()}.csv`, rows.join("\n"), "text/csv");
+    // BOM + CRLF: senza, Excel mostra male accenti ed emoji dei nomi.
+    download(`ig-${Date.now()}.csv`, "\uFEFF" + rows.join("\r\n"), "text/csv;charset=utf-8");
   }
 
   function json() {
