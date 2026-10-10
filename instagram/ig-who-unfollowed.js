@@ -476,7 +476,6 @@ ${d ? section("❌ Ti hanno tolto il follow", notKept(d.unfollowedYou), "gone") 
 ${d ? section("👻 Spariti (account chiuso o ti hanno bloccato)", notKept(d.vanished), "") : ""}
 ${d ? section("✅ Nuovi follower", d.newFollowers, "") : ""}
 ${section("Non ti seguono", targets, "")}
-${section("Li segui e non ricambiano — no, li ricambi tu", [], "")}
 ${section("Ti seguono ma non li segui", r.youDontFollowBack, "")}
 <footer>Generato in locale dal tuo browser. Nessun dato è stato inviato a terzi.<br>
 Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
