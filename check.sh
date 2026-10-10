@@ -18,8 +18,13 @@ while IFS= read -r -d '' file; do
     bash "$file" || status=1
 done < <(git ls-files -z -- 'tests/*.test.sh')
 
-if git ls-files --error-unmatch 'tests/*.test.js' >/dev/null 2>&1; then
-    node --test tests/ || status=1
+# explicit file list: what `node --test <directory>` picks up changes between Node versions
+js_tests=()
+while IFS= read -r -d '' file; do
+    js_tests+=("$file")
+done < <(git ls-files -z -- 'tests/*.test.js')
+if [ "${#js_tests[@]}" -gt 0 ]; then
+    node --test "${js_tests[@]}" || status=1
 fi
 
 exit "$status"
