@@ -18,6 +18,7 @@ dependencies to install and nothing to build.
 | Check your changes or add a script | [Development](#development) |
 | Understand why the repository is shaped this way | [Decisions](#decisions) |
 | Know what is not covered yet | [Known limitations](#known-limitations) |
+| Know whether you may reuse the code | [Licence](#licence) |
 
 ## Structure
 
@@ -29,7 +30,9 @@ dependencies to install and nothing to build.
 │   ├── README.md                   # usage, commands, how to read the results
 │   └── ig-who-unfollowed.js        # read-only scan, snapshots and diff between scans
 ├── tests/
-│   └── existingFileWithString.test.sh
+│   ├── existingFileWithString.test.sh   # Bash tests of the shell helper
+│   ├── ig-who-unfollowed.test.js        # Node tests of the Instagram script
+│   └── fake-browser.js                  # fake browser and fake Instagram used by the tests
 ├── check.sh                        # lint, syntax check and tests (also run by CI)
 └── .github/                        # CI workflow and Dependabot
 ```
@@ -65,18 +68,22 @@ results are in [`instagram/README.md`](instagram/README.md).
 ./check.sh
 ```
 
-Runs `shellcheck` on every tracked `*.sh`, `node --check` on every tracked `*.js` and the tests
-in `tests/*.test.sh`. CI runs the same command on pushes to `development` and on pull requests.
+Runs `shellcheck` on every tracked `*.sh`, `node --check` on every tracked `*.js`, the Bash
+tests in `tests/*.test.sh` and the Node tests in `tests/*.test.js` (built-in `node --test`
+runner, nothing to install). It only looks at tracked files: `git add` a new file first. CI
+runs the same command on every push to `development` and on Dependabot's pull requests.
 
 Requirements: `bash`, `shellcheck`, `node`.
 
-Changes go on a branch and reach `development`, the default branch, through a pull request.
+Changes are made on a branch, checked with `./check.sh` and merged locally into `development`,
+the default branch, with a fast-forward. Pull requests are used only by Dependabot.
 
 Adding a script:
 
 1. Put it in the folder of its area (create a new top-level folder for a new area).
 2. Start the file with a comment that says what it does and how to run it.
-3. Add a `tests/<name>.test.sh` for anything that can run outside a browser.
+3. Add tests: `tests/<name>.test.sh` for a shell script, `tests/<name>.test.js` for a browser
+   script (see `tests/fake-browser.js` for how to run one under Node).
 4. Add it to the structure above and document it in this README, or in the area's own
    `README.md` once the area has more than one script.
 5. Never commit personal data: usernames, exports, tokens or cookies.
@@ -93,14 +100,22 @@ Adding a script:
 - **Own code only.** The third-party console tool these scripts replaced is not in the
   repository.
 - **A single check command.** `check.sh` is what runs locally and in CI, so the two cannot
-  drift apart. Tests are plain Bash with no framework, in line with the no-dependency rule.
+  drift apart. Tests are plain Bash or Node's built-in runner, in line with the no-dependency
+  rule.
+- **Browser scripts are tested as they are.** The tests load the real file into a fake page
+  with fake Instagram endpoints and call its public commands, so the script needs no exports
+  or test hooks.
+- **Local fast-forward merges instead of pull requests**, so every commit on `development`
+  carries the author's own identity.
 - **GitHub Actions pinned by commit SHA**, updated by Dependabot.
 
 ## Known limitations
 
-- The Instagram scripts are covered only by a syntax check: their logic lives inside a
-  browser-only closure and has no automated tests.
-- The CSV exports quote every value but do not neutralise values that start with `=`, `+`, `-`
-  or `@`, which a spreadsheet may read as formulas.
-- The scripts rely on Instagram's private web endpoints, which can change without notice.
-- There is no licence file yet.
+- The Instagram script is tested against fake endpoints only. It relies on Instagram's private
+  web endpoints, which can change without notice and cannot be exercised in CI.
+- Its completeness check depends on the profile counters: when Instagram does not return them,
+  a truncated list cannot be detected (the scan says so).
+
+## Licence
+
+No licence is granted: the code is public to be read, not to be reused.
