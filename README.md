@@ -6,7 +6,7 @@ dependencies to install and nothing to build.
 | Area | Folder | What is inside |
 |---|---|---|
 | Shell utilities | [`sh/`](sh/) | Bash helpers for the local filesystem |
-| Instagram | [`instagram/`](instagram/) | Browser-console scripts to see who does not follow back |
+| Instagram | [`instagram/`](instagram/) | Read-only browser-console script to see who does not follow back |
 
 ## Where to look
 
@@ -14,7 +14,7 @@ dependencies to install and nothing to build.
 |---|---|
 | Find which script does what | [Structure](#structure) |
 | Run the shell helper | [Shell utilities](#shell-utilities) |
-| Run an Instagram script, or pick between the two | [`instagram/README.md`](instagram/README.md) |
+| Run the Instagram script | [`instagram/README.md`](instagram/README.md) |
 | Check your changes or add a script | [Development](#development) |
 | Understand why the repository is shaped this way | [Decisions](#decisions) |
 | Know what is not covered yet | [Known limitations](#known-limitations) |
@@ -26,9 +26,8 @@ dependencies to install and nothing to build.
 ├── sh/
 │   └── existingFileWithString.sh   # list the files of a directory that contain a string
 ├── instagram/
-│   ├── README.md                   # usage, safety notes, version history
-│   ├── ig-who-unfollowed.js        # v2, current: read-only
-│   └── ig-unfollowers.js           # v1: scan + optional rate-limited unfollow
+│   ├── README.md                   # usage, commands, how to read the results
+│   └── ig-who-unfollowed.js        # read-only scan, snapshots and diff between scans
 ├── tests/
 │   └── existingFileWithString.test.sh
 ├── check.sh                        # lint, syntax check and tests (also run by CI)
@@ -56,9 +55,9 @@ bash sh/existingFileWithString.sh "TODO" /path/to/directory
 
 ## Instagram
 
-Scripts to paste in the browser console on `instagram.com` while logged in. Use
-`ig-who-unfollowed.js` unless you have a reason not to: it only sends GET requests. Details,
-commands and the history of the two versions are in [`instagram/README.md`](instagram/README.md).
+`ig-who-unfollowed.js` is pasted in the browser console on `instagram.com` while logged in. It
+only sends GET requests, so it cannot change the account. Usage, commands and how to read the
+results are in [`instagram/README.md`](instagram/README.md).
 
 ## Development
 
@@ -86,11 +85,11 @@ Adding a script:
 
 - **Grouped by area, not by language.** A folder is a topic (`instagram/`); `sh/` holds the
   generic shell helpers that belong to no topic yet.
-- **One file per script, no build step.** The Instagram scripts are pasted whole into the
-  browser console, so each one must work alone. The code the two versions share is duplicated
-  on purpose instead of being moved to a module that would need bundling.
-- **Read-only first.** `ig-who-unfollowed.js` has no write request at all. The version that can
-  unfollow is kept as a separate file, so the default choice can never change the account.
+- **One file per script, no build step.** The Instagram script is pasted whole into the
+  browser console, so it must work alone: no modules, no bundling.
+- **Read-only.** `ig-who-unfollowed.js` has no write request at all. An earlier version that
+  could also unfollow (`ig-unfollowers.js`) was removed; unfollowing is done by hand from the
+  profiles the script opens.
 - **Own code only.** The third-party console tool these scripts replaced is not in the
   repository.
 - **A single check command.** `check.sh` is what runs locally and in CI, so the two cannot
