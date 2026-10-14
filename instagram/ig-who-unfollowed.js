@@ -119,8 +119,9 @@
   /* ========================================================================
    * RETE — solo GET. Nessun metodo, nessun body, nessun csrftoken.
    * ====================================================================== */
-  // soft: una risposta inattesa restituisce null invece di fermare tutto
-  // (per le richieste facoltative). I segnali di blocco fermano comunque.
+  // soft: per le richieste facoltative. Un solo tentativo, nessuna attesa:
+  // qualunque errore restituisce null invece di fermare lo scan. Solo i
+  // segnali di blocco nel corpo della risposta fermano comunque.
   async function igFetch(path, { soft = false } = {}) {
     const url = ORIGIN + path;
 
@@ -139,6 +140,7 @@
       } catch (e) {
         clearTimeout(timer);
         if (ABORT) throw new AbortError("interrotto");
+        if (soft) return null;
         if (attempt === CONFIG.MAX_RETRIES) throw new FatalError(`rete: ${e.message}`);
         const w = CONFIG.BACKOFF_BASE * 2 ** attempt + rand(0, 2000);
         warn(`errore di rete, ritento fra ${Math.round(w / 1000)}s`);
@@ -156,6 +158,8 @@
           `Instagram ha risposto "${sig}". Mi fermo subito. ` +
           `Aspetta qualche ora, usa l'app normalmente, poi riprova.`
         );
+
+      if (soft && !res.ok) return null;
 
       if (res.status === 401 || res.status === 403)
         throw new FatalError(`HTTP ${res.status}: sessione scaduta. Ricarica e rifai login.`);

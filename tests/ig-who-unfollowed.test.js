@@ -596,3 +596,26 @@ test("reset: clears snapshots, keep list and the restored result", async () => {
   assert.equal(page.IU.last, null);
   assert.equal(page.storage.size, 0);
 });
+
+test("scan: a rate-limited profile counter is tried once and does not stop the scan", async () => {
+  const instagram = new FakeInstagram({ following: [user(1), user(2)], followers: [user(1)] });
+  instagram.override = (url) => (url.pathname.endsWith("/info/") ? { status: 429, body: {} } : null);
+  const page = loadScript({ instagram });
+  const result = await page.IU.scan();
+
+  assert.deepEqual(names(result.notFollowingBack), ["user2"]);
+  assert.equal(page.requests.filter((r) => r.url.endsWith("/info/")).length, 1, "no retries");
+  assert.ok(page.said("warn", /non posso verificare/));
+  assert.ok(!page.said("warn", /HTTP 429/));
+});
+
+test("scan: a block signal on the profile counter still stops everything", async () => {
+  const instagram = new FakeInstagram({ following: [user(1)], followers: [] });
+  instagram.override = (url) =>
+    url.pathname.endsWith("/info/") ? { status: 400, body: { message: "challenge_required" } } : null;
+  const page = loadScript({ instagram });
+
+  assert.equal(await page.IU.scan(), undefined);
+  assert.equal(page.requests.length, 1);
+  assert.ok(page.said("error", /challenge_required/));
+});
