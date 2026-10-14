@@ -28,6 +28,7 @@ class FakeInstagram {
     this.following = following;
     this.followers = followers;
     this.pageSize = pageSize;
+    this.hidden = new Set();
     // Optional (url) => response, checked before the built-in routes.
     this.override = null;
   }
@@ -36,9 +37,16 @@ class FakeInstagram {
     const forced = this.override?.(url);
     if (forced) return forced;
 
+    const show = url.pathname.match(/^\/api\/v1\/friendships\/show\/(\d+)\/$/);
+    if (show) {
+      const has = (list) => list.some((u) => String(u.pk) === show[1]);
+      return { status: 200, body: { following: has(this.following), followed_by: has(this.followers), status: "ok" } };
+    }
+
     const list = url.pathname.match(/^\/api\/v1\/friendships\/\d+\/(following|followers)\/$/);
     if (list) {
-      const all = this[list[1]];
+      // hidden: accounts the list omits although the relationship exists (seen live).
+      const all = this[list[1]].filter((u) => !this.hidden.has(u.pk));
       const start = Number(url.searchParams.get("max_id") || 0);
       const end = start + this.pageSize;
       return {

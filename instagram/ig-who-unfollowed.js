@@ -58,6 +58,7 @@
     BACKOFF_BASE: 4_000,
     REQUEST_TIMEOUT: 30_000,
     MAX_HISTORY: 8, // snapshot conservati per account
+    VERIFY_MAX: 30, // oltre questo numero di assenze non si verifica uno per uno
     LIST_GAP_MIN: 3_000, // pausa fra la lista "following" e la lista "followers"
     LIST_GAP_MAX: 6_000,
     CHECKPOINT_TTL: 30 * 60_000, // uno scan interrotto da più tempo riparte da zero
@@ -122,7 +123,9 @@
   /* ========================================================================
    * RETE — solo GET. Nessun metodo, nessun body, nessun csrftoken.
    * ====================================================================== */
-  async function igFetch(path) {
+  // soft: per le verifiche facoltative. Un solo tentativo, nessuna attesa:
+  // qualunque errore restituisce null. I segnali di blocco fermano comunque.
+  async function igFetch(path, { soft = false } = {}) {
     const url = ORIGIN + path;
 
     for (let attempt = 0; attempt <= CONFIG.MAX_RETRIES; attempt++) {
@@ -140,6 +143,7 @@
       } catch (e) {
         clearTimeout(timer);
         if (ABORT) throw new AbortError("interrotto");
+        if (soft) return null;
         if (attempt === CONFIG.MAX_RETRIES) throw new FatalError(`rete: ${e.message}`);
         const w = CONFIG.BACKOFF_BASE * 2 ** attempt + rand(0, 2000);
         warn(`errore di rete, ritento fra ${Math.round(w / 1000)}s`);
@@ -157,6 +161,8 @@
           `Instagram ha risposto "${sig}". Mi fermo subito. ` +
           `Aspetta qualche ora, usa l'app normalmente, poi riprova.`
         );
+
+      if (soft && !res.ok) return null;
 
       if (res.status === 401 || res.status === 403)
         throw new FatalError(`HTTP ${res.status}: sessione scaduta. Ricarica e rifai login.`);
@@ -177,6 +183,7 @@
 
       try { return JSON.parse(body); }
       catch {
+        if (soft) return null;
         throw new FatalError(
           "risposta non-JSON: di solito è una pagina di verifica. Apri instagram.com e controlla."
         );
@@ -265,6 +272,47 @@
     return [...byId.values()];
   }
 
+  /**
+   * Le liste di Instagram non sono stabili: fra uno scan e l'altro possono
+   * omettere qualche account che c'è ancora (verificato dal vivo). Chi era
+   * nello snapshot precedente e ora manca viene controllato uno per uno con
+   * friendships/show (una GET, la stessa della pagina profilo): se il legame
+   * esiste ancora l'account torna nella lista. Modifica le liste sul posto.
+   */
+  async function verifyMissing(prev, following, followers) {
+    if (!prev) return { restored: 0, unverified: 0 };
+    const fgIds = new Set(following.map((u) => u.id));
+    const frIds = new Set(followers.map((u) => u.id));
+    const nameOf = new Map([...prev.fg, ...prev.fr]);
+    const missFg = prev.fg.map((p) => p[0]).filter((id) => !fgIds.has(id));
+    const missFr = prev.fr.map((p) => p[0]).filter((id) => !frIds.has(id));
+    const ids = [...new Set([...missFg, ...missFr])];
+    if (!ids.length) return { restored: 0, unverified: 0 };
+    if (ids.length > CONFIG.VERIFY_MAX) {
+      warn(`${ids.length} account spariti dalle liste rispetto allo scan precedente: troppi da ` +
+           `verificare uno per uno, il confronto può contenere falsi positivi.`);
+      return { restored: 0, unverified: ids.length };
+    }
+
+    const blank = (id) => ({ id, username: nameOf.get(id), full_name: "", is_private: null, is_verified: null });
+    let restored = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      ui.status(`verifica ${i + 1}/${ids.length}`);
+      const rel = await igFetch(`/api/v1/friendships/show/${id}/`, { soft: true });
+      if (typeof rel?.following !== "boolean" || typeof rel?.followed_by !== "boolean") {
+        warn(`verifica interrotta (Instagram non risponde): ${ids.length - i} account non verificati, ` +
+             `il confronto può contenere falsi positivi.`);
+        return { restored, unverified: ids.length - i };
+      }
+      if (rel.following && missFg.includes(id)) { following.push(blank(id)); restored++; }
+      if (rel.followed_by && missFr.includes(id)) { followers.push(blank(id)); restored++; }
+      if (i < ids.length - 1) await waitFor(rand(CONFIG.DELAY_MIN, CONFIG.DELAY_MAX), "verifica");
+    }
+    if (restored) log(`${restored} account omessi da Instagram nelle liste e rimessi dopo la verifica.`);
+    return { restored, unverified: 0 };
+  }
+
   /* ========================================================================
    * SNAPSHOT — uno per scan, etichettato con l'account che l'ha prodotto
    * ====================================================================== */
@@ -350,6 +398,7 @@
       const following = await fetchList(userId, "following", onProgress);
       await waitFor(rand(CONFIG.LIST_GAP_MIN, CONFIG.LIST_GAP_MAX), "");
       const followers = await fetchList(userId, "followers", onProgress);
+      await verifyMissing(mySnaps(userId).at(-1), following, followers);
 
       const partial = !!expected &&
         (isShort(following.length, expected.following) || isShort(followers.length, expected.followers));
@@ -380,7 +429,11 @@
    * DIFF — la funzione che risponde davvero a "chi mi ha unfollowato"
    * ====================================================================== */
   /** Confronto fra due snapshot (A più vecchio di B). Nessun effetto collaterale. */
-  function computeDiff(A, B) {
+  /**
+   * earlier: snapshot precedenti ad A. Chi risulta "nuovo" in B ma compariva
+   * già in uno di quelli era solo stato omesso da Instagram in A: "ricomparso".
+   */
+  function computeDiff(A, B, earlier = []) {
     const nameOf = new Map([...A.fg, ...A.fr, ...B.fg, ...B.fr]);
     const setOf = (pairs) => new Set(pairs.map((p) => p[0]));
 
@@ -404,6 +457,11 @@
       else unfollowedYou.push(mk(id));
     }
 
+    const seenFr = new Set(earlier.flatMap((s) => s.fr.map((p) => p[0])));
+    const seenFg = new Set(earlier.flatMap((s) => s.fg.map((p) => p[0])));
+    const newFr = [...bFr].filter((id) => !aFr.has(id));
+    const newFg = [...bFg].filter((id) => !aFg.has(id));
+
     return {
       from: A.t,
       to: B.t,
@@ -413,9 +471,11 @@
       legacy: A.v !== SNAP_VERSION || B.v !== SNAP_VERSION,
       unfollowedYou,
       vanished,
-      newFollowers: [...bFr].filter((id) => !aFr.has(id)).map(mk),
+      newFollowers: newFr.filter((id) => !seenFr.has(id)).map(mk),
       youUnfollowed: [...aFg].filter((id) => !bFg.has(id) && !vanishedIds.has(id)).map(mk),
-      youFollowed: [...bFg].filter((id) => !aFg.has(id)).map(mk),
+      youFollowed: newFg.filter((id) => !seenFg.has(id)).map(mk),
+      // Mancavano solo nello snapshot A: non sono cambiamenti veri.
+      reappeared: [...new Set([...newFr.filter((id) => seenFr.has(id)), ...newFg.filter((id) => seenFg.has(id))])].map(mk),
       delta: { followers: bFr.size - aFr.size, following: bFg.size - aFg.size },
     };
   }
@@ -423,7 +483,7 @@
   /** Confronto fra gli ultimi due snapshot dell'account, o null se non bastano. */
   function lastDiff() {
     const s = mySnaps();
-    return s.length >= 2 ? computeDiff(s.at(-2), s.at(-1)) : null;
+    return s.length >= 2 ? computeDiff(s.at(-2), s.at(-1), s.slice(0, -2)) : null;
   }
 
   function diff(olderIndex = -2, newerIndex = -1) {
@@ -441,7 +501,7 @@
     }
     if (A.t > B.t) [A, B] = [B, A]; // sempre dal più vecchio al più recente
 
-    const res = computeDiff(A, B);
+    const res = computeDiff(A, B, snaps.filter((x) => x.t < A.t));
 
     const keep = keepSet();
     const show = (label, list, color) => {
@@ -465,6 +525,8 @@
     show("✅ nuovi follower", res.newFollowers, "#5cb85c");
     show("↩️  hai smesso di seguire", res.youUnfollowed, "#888");
     show("➡️  hai iniziato a seguire", res.youFollowed, "#888");
+    if (res.reappeared.length)
+      log(`${res.reappeared.length} account mancavano solo nello scan precedente (omessi da Instagram): ignorati.`);
     if (!res.unfollowedYou.length && !res.vanished.length)
       log("%cNessuno ti ha tolto il follow in questo periodo.", "color:#5cb85c");
     console.groupEnd();
@@ -728,7 +790,8 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
   const n = mine.length;
   if (n) LAST = fromSnapshot(mine.at(-1));
   console.log(
-    `%cIU pronto — sola lettura.%c  IU.scan() per iniziare.` +
+    `%cIU pronto — sola lettura.%c  IU.scan() per iniziare, oppure ` +
+    `IU.scan({ follower: N, seguiti: N }) con i numeri del tuo profilo per verificare che le liste siano complete.` +
     (n >= 2 ? `\n${n} snapshot salvati: IU.diff() per vedere chi ti ha tolto il follow.`
             : n === 1 ? `\n1 snapshot salvato: dopo il prossimo scan avrai il confronto.` : ""),
     "color:#4ea1ff;font-weight:bold;font-size:14px", "color:inherit"

@@ -350,19 +350,22 @@ test("diff: needs two scans", async () => {
 });
 
 test("diff: a comparison with an incomplete scan is marked as unreliable", async () => {
-  const instagram = new FakeInstagram({ following: range(1, 40), followers: range(1, 40) });
+  // 50 accounts missing: more than VERIFY_MAX, so they are not checked one by one.
+  const instagram = new FakeInstagram({ following: range(1, 60), followers: range(1, 60) });
   const page = loadScript({ instagram });
-  await page.IU.scan({ follower: 40, seguiti: 40 });
+  await page.IU.scan({ follower: 60, seguiti: 60 });
   instagram.override = (url) =>
     url.pathname.includes("/followers/")
       ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
       : null;
-  await page.IU.scan({ follower: 40, seguiti: 40 });
+  await page.IU.scan({ follower: 60, seguiti: 60 });
   const d = page.IU.diff();
 
   assert.equal(d.unreliable, true);
-  assert.equal(d.unfollowedYou.length, 30, "the missing accounts look like unfollows: hence the warning");
+  assert.equal(d.unfollowedYou.length, 50, "the missing accounts look like unfollows: hence the warning");
   assert.ok(page.said("warn", /uno dei due scan era incompleto/));
+  assert.ok(page.said("warn", /50 account spariti.*troppi da verificare/));
+  assert.ok(!page.requests.some((r) => r.url.includes("/friendships/show/")));
 });
 
 test("diff: snapshots of another account in the same browser are not compared", async () => {
@@ -646,4 +649,101 @@ test("diff: two snapshots from this version are not flagged", async () => {
 
   assert.equal(d.legacy, false);
   assert.ok(!page.said("warn", /versione vecchia/));
+});
+
+/* -------------------------------------------------------------- verify --- */
+
+test("verify: accounts the lists omit although nothing changed are put back (seen live)", async () => {
+  const instagram = new FakeInstagram({
+    following: [user(1, "wassup"), user(2, "leevey"), user(3)],
+    followers: [user(1, "wassup"), user(4)],
+  });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  instagram.hidden = new Set([1, 2]); // Instagram leaves them out of the next lists
+  const result = await page.IU.scan();
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.youUnfollowed), []);
+  assert.deepEqual(names(d.unfollowedYou), []);
+  assert.deepEqual(names(d.vanished), []);
+  assert.equal(result.counts.following, 3);
+  assert.equal(result.counts.followers, 2);
+  assert.ok(page.said("log", /3 account omessi da Instagram/));
+  const checks = page.requests.filter((r) => r.url.includes("/friendships/show/"));
+  assert.equal(checks.length, 2, "one check per missing account, not per list");
+  assert.ok(checks.every((r) => r.init.method === undefined && r.init.body === undefined));
+});
+
+test("verify: real changes are confirmed and still reported", async () => {
+  const instagram = new FakeInstagram({
+    following: [user(1), user(2)],
+    followers: [user(1), user(2), user(3)],
+  });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  Object.assign(instagram, { following: [user(1)], followers: [user(1), user(2)] });
+  await page.IU.scan();
+  const d = page.IU.diff();
+
+  // user2: I unfollowed it, it still follows me. user3 stopped following me.
+  assert.deepEqual(names(d.youUnfollowed), ["user2"]);
+  assert.deepEqual(names(d.vanished), []);
+  assert.deepEqual(names(d.unfollowedYou), ["user3"]);
+  assert.equal(page.requests.filter((r) => r.url.includes("/show/")).length, 2);
+});
+
+test("verify: when Instagram refuses the checks the scan completes and says what is unverified", async () => {
+  const instagram = new FakeInstagram({ following: [user(1), user(2)], followers: [user(1)] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  instagram.hidden = new Set([1, 2]);
+  instagram.override = (url) => (url.pathname.includes("/show/") ? { status: 429, body: {} } : null);
+  const result = await page.IU.scan();
+
+  assert.equal(result.counts.following, 0);
+  assert.ok(page.said("warn", /verifica interrotta.*2 account non verificati/));
+  assert.equal(page.requests.filter((r) => r.url.includes("/show/")).length, 1, "stops at the first refusal");
+});
+
+test("verify: a block signal during the checks stops everything", async () => {
+  const instagram = new FakeInstagram({ following: [user(1)], followers: [] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  instagram.hidden = new Set([1]);
+  instagram.override = (url) =>
+    url.pathname.includes("/show/") ? { status: 400, body: { message: "feedback_required" } } : null;
+
+  assert.equal(await page.IU.scan(), undefined);
+  assert.ok(page.said("error", /feedback_required/));
+});
+
+test("verify: nothing to check on the first scan", async () => {
+  const instagram = new FakeInstagram({ following: [user(1)], followers: [] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+
+  assert.ok(!page.requests.some((r) => r.url.includes("/show/")));
+});
+
+test("diff: an account missing only from the previous scan is not reported as new", async () => {
+  // Snapshots from before the checks existed: user2 is in the oldest, missing from the middle one.
+  const old = (t, ids) => ({ t, u: "100", v: 2, fg: ids.map((i) => [String(i), `user${i}`]), fr: ids.map((i) => [String(i), `user${i}`]) });
+  const storage = new Map([["__iu_snaps_v2", JSON.stringify([
+    old("2026-01-01T10:00:00.000Z", [1, 2]),
+    old("2026-01-02T10:00:00.000Z", [1]),
+    old("2026-01-03T10:00:00.000Z", [1, 2, 3]),
+  ])]]);
+  const page = loadScript({ storage });
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.youFollowed), ["user3"]);
+  assert.deepEqual(names(d.newFollowers), ["user3"]);
+  assert.deepEqual(names(d.reappeared), ["user2"]);
+  assert.ok(page.said("log", /1 account mancavano solo nello scan precedente/));
+});
+
+test("load message shows how to pass the profile numbers", () => {
+  const page = loadScript();
+  assert.ok(page.said("log", /IU\.scan\(\{ follower: N, seguiti: N \}\) con i numeri del tuo profilo/));
 });

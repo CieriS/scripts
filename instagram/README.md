@@ -58,6 +58,22 @@ Things the script cannot know:
 - An account you did not follow that closes or blocks you looks the same as an unfollow.
 - An account you unfollowed that also unfollowed you is listed under "spariti".
 
+### Accounts Instagram leaves out
+
+Instagram's lists are not stable: two scans a few hours apart can each leave out a different
+handful of accounts that are still there (seen live with a 585-account following list, where
+the counter matched both times). Compared naively, those gaps look like unfollows and new
+follows. Two checks prevent that:
+
+- **After each scan**, every account that was in the previous snapshot and is now missing is
+  checked one by one with the same read-only request the profile page makes. If the
+  relationship still exists the account is put back. With more than 30 missing accounts the
+  check is skipped (that is a truncated list, not a few gaps) and the comparison is flagged.
+  If Instagram refuses a check, the scan stops checking, completes, and says how many accounts
+  are unverified.
+- **In `IU.diff()`**, an account that is "new" but already appeared in an older snapshot was
+  only missing from the previous one: it is counted as reappeared and not listed as new.
+
 ### Snapshots from an older version
 
 Snapshots saved before v1.0.1 carry no version mark. The version that wrote most of them could
