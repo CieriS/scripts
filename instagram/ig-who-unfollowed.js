@@ -68,6 +68,7 @@
   const K_SNAPS = "__iu_snaps_v2";
   const K_KEEP = "__iu_keep_v2";
   const K_CK = "__iu_ck_v2";
+  const SNAP_VERSION = 2;
 
   const FATAL_SIGNALS = [
     "feedback_required", "challenge_required", "checkpoint_required",
@@ -280,7 +281,9 @@
     const others = all.filter((s) => !isMine(uid)(s));
 
     mine.forEach((s) => { s.u = uid; });
-    const snap = { t, u: uid, fg: compact(following), fr: compact(followers) };
+    // v: snapshot scritto da questa versione. Senza v viene da una versione
+    // precedente, che poteva salvare liste mescolate o troncate.
+    const snap = { v: SNAP_VERSION, t, u: uid, fg: compact(following), fr: compact(followers) };
     if (partial) snap.p = 1; // liste incomplete: il confronto con questo scan è inaffidabile
     mine.push(snap);
     while (mine.length > CONFIG.MAX_HISTORY) mine.shift();
@@ -405,6 +408,8 @@
       to: B.t,
       // Uno dei due scan era incompleto: chi manca dalla lista sembra un unfollow.
       unreliable: !!(A.p || B.p),
+      // Uno dei due viene da una versione precedente dello script: stesse conseguenze.
+      legacy: A.v !== SNAP_VERSION || B.v !== SNAP_VERSION,
       unfollowedYou,
       vanished,
       newFollowers: [...bFr].filter((id) => !aFr.has(id)).map(mk),
@@ -448,6 +453,10 @@
     console.group(`%c[IU] Confronto  ${fmtDate(A.t)}  →  ${fmtDate(B.t)}`, "color:#4ea1ff;font-weight:bold");
     if (res.unreliable)
       warn("⚠️ uno dei due scan era incompleto: questo confronto può contenere falsi \"ti hanno tolto il follow\".");
+    if (res.legacy)
+      warn("⚠️ lo snapshot precedente è stato salvato da una versione vecchia dello script, che " +
+           "poteva registrare liste incomplete o mescolate: \"nuovi follower\" e \"hai iniziato a " +
+           "seguire\" possono contenere account di vecchia data. Dal prossimo scan il confronto è affidabile.");
     log(`follower: ${res.delta.followers >= 0 ? "+" : ""}${res.delta.followers}   ` +
         `seguiti: ${res.delta.following >= 0 ? "+" : ""}${res.delta.following}`);
     show("❌ TI HANNO TOLTO IL FOLLOW", res.unfollowedYou, "#e05252");
@@ -583,6 +592,7 @@ a{color:var(--acc);text-decoration:none;font-weight:600}a:hover{text-decoration:
 </style></head><body>
 <h1>Chi non ti segue</h1>
 <div class="sub">Scan del ${escapeHtml(fmtDate(r.scannedAt))}${d ? ` · confronto dal ${escapeHtml(fmtDate(d.from))}` : ""}</div>
+${d?.legacy ? `<div class="sub">⚠️ Il confronto usa uno snapshot di una versione vecchia dello script: i nuovi follower possono includere account di vecchia data.</div>` : ""}
 ${r.partial || d?.unreliable ? `<div class="sub">⚠️ Liste incomplete in questo scan o nel precedente: l'elenco può contenere persone che in realtà ti seguono.</div>` : ""}
 <div class="stats">
 <div class="stat"><b>${r.counts.following}</b><span>segui</span></div>
@@ -653,6 +663,7 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
     console.table(s.map((x, i) => ({
       "#": i - s.length, quando: fmtDate(x.t), segui: x.fg.length, "ti seguono": x.fr.length,
       completo: x.p ? "no" : "sì",
+      versione: x.v === SNAP_VERSION ? "attuale" : "vecchia",
     })));
     log("usa IU.diff(-3,-1) per confrontare snapshot non adiacenti");
     return s.map((x) => x.t);

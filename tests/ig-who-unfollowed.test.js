@@ -619,3 +619,32 @@ test("scan: a block signal on the profile counter still stops everything", async
   assert.equal(page.requests.length, 1);
   assert.ok(page.said("error", /challenge_required/));
 });
+
+test("diff: a comparison with a snapshot from an older version is flagged", async () => {
+  // The old version could save a truncated list: user2 and user3 look new although they are not.
+  const legacy = new Map([[
+    "__iu_snaps_v2",
+    JSON.stringify([{ t: "2026-01-01T10:00:00.000Z", u: "100", fg: [["1", "user1"]], fr: [["1", "user1"]] }]),
+  ]]);
+  const page = loadScript({
+    instagram: new FakeInstagram({ following: [user(1), user(2)], followers: [user(1), user(3)] }),
+    storage: legacy,
+  });
+  await page.IU.scan();
+
+  assert.equal(page.IU.diff().legacy, true);
+  assert.ok(page.said("warn", /versione vecchia dello script/));
+  assert.equal(page.IU.history().length, 2);
+  assert.deepEqual(page.tables.at(-1).map((r) => r.versione), ["vecchia", "attuale"]);
+});
+
+test("diff: two snapshots from this version are not flagged", async () => {
+  const page = await twoScans(
+    { following: [user(1)], followers: [user(1)] },
+    { following: [user(1)], followers: [user(1), user(2)] }
+  );
+  const d = page.IU.diff();
+
+  assert.equal(d.legacy, false);
+  assert.ok(!page.said("warn", /versione vecchia/));
+});

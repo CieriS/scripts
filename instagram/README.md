@@ -57,6 +57,14 @@ Things the script cannot know:
 - An account you did not follow that closes or blocks you looks the same as an unfollow.
 - An account you unfollowed that also unfollowed you is listed under "spariti".
 
+### Snapshots from an older version
+
+Snapshots saved before v1.0.1 carry no version mark. The version that wrote most of them could
+store mixed or truncated lists, so a comparison with one of them can list long-standing
+followers as "nuovi follower" and old follows as "hai iniziato a seguire". `IU.diff()` and the
+HTML report say so, and `IU.history()` shows the version of each snapshot. From the second scan
+made with the current version on, the default comparison uses only current snapshots.
+
 ### Incomplete lists
 
 Instagram sometimes returns a list shorter than the real one. Every missing account would look
