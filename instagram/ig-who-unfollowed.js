@@ -15,6 +15,8 @@
  *
  * COMANDI
  *   IU.scan()        analizza e salva uno snapshot
+ *   IU.scan({ follower: 1222, seguiti: 585 })  idem, verificando che le liste
+ *                    siano complete (numeri letti sul tuo profilo)
  *   IU.diff()        ⭐ chi ti ha tolto il follow dall'ultimo scan
  *   IU.report()      chi non ti segue (ultimo scan, anche dopo un reload)
  *   IU.html()        report HTML cliccabile da aprire e lavorare
@@ -28,8 +30,8 @@
  *   IU.stop()        interrompe uno scan in corso
  *   IU.reset()       cancella tutto lo stato salvato
  *
- * AFFIDABILITÀ — Instagram a volte restituisce liste più corte del vero. Lo
- * scan confronta le liste lette con i contatori del profilo: se mancano
+ * AFFIDABILITÀ — Instagram a volte restituisce liste più corte del vero. Se
+ * gli passi i numeri del profilo, lo scan li confronta con le liste lette: se mancano
  * account lo dice ("liste incomplete") e segna lo snapshot, così diff() avvisa
  * che il confronto può contenere falsi unfollow. Gli snapshot sono separati
  * per account: cambiando account nello stesso browser non si mescolano.
@@ -120,10 +122,7 @@
   /* ========================================================================
    * RETE — solo GET. Nessun metodo, nessun body, nessun csrftoken.
    * ====================================================================== */
-  // soft: per le richieste facoltative. Un solo tentativo, nessuna attesa:
-  // qualunque errore restituisce null invece di fermare lo scan. Solo i
-  // segnali di blocco nel corpo della risposta fermano comunque.
-  async function igFetch(path, { soft = false } = {}) {
+  async function igFetch(path) {
     const url = ORIGIN + path;
 
     for (let attempt = 0; attempt <= CONFIG.MAX_RETRIES; attempt++) {
@@ -141,7 +140,6 @@
       } catch (e) {
         clearTimeout(timer);
         if (ABORT) throw new AbortError("interrotto");
-        if (soft) return null;
         if (attempt === CONFIG.MAX_RETRIES) throw new FatalError(`rete: ${e.message}`);
         const w = CONFIG.BACKOFF_BASE * 2 ** attempt + rand(0, 2000);
         warn(`errore di rete, ritento fra ${Math.round(w / 1000)}s`);
@@ -160,8 +158,6 @@
           `Aspetta qualche ora, usa l'app normalmente, poi riprova.`
         );
 
-      if (soft && !res.ok) return null;
-
       if (res.status === 401 || res.status === 403)
         throw new FatalError(`HTTP ${res.status}: sessione scaduta. Ricarica e rifai login.`);
 
@@ -177,14 +173,10 @@
         continue;
       }
 
-      if (!res.ok) {
-        if (soft) return null;
-        throw new FatalError(`HTTP ${res.status} inatteso`);
-      }
+      if (!res.ok) throw new FatalError(`HTTP ${res.status} inatteso`);
 
       try { return JSON.parse(body); }
       catch {
-        if (soft) return null;
         throw new FatalError(
           "risposta non-JSON: di solito è una pagina di verifica. Apri instagram.com e controlla."
         );
@@ -197,19 +189,26 @@
    * SCAN
    * ====================================================================== */
   /**
-   * Contatori del profilo: servono solo a capire se le liste lette sono
-   * complete. Se la richiesta non riesce lo scan prosegue, senza verifica.
+   * Contatori del profilo passati a mano, per capire se le liste lette sono
+   * complete. Non si chiedono a Instagram: l'endpoint risponde sempre 429.
+   * Restituisce { expected } (null se non dati) oppure { error }.
    */
-  async function fetchExpected(userId) {
-    const data = await igFetch(`/api/v1/users/${userId}/info/`, { soft: true });
-    const u = data?.user;
-    if (!Number.isFinite(u?.follower_count) || !Number.isFinite(u?.following_count)) return null;
-    return { following: u.following_count, followers: u.follower_count };
+  function parseCounts(counts) {
+    if (counts == null) return { expected: null };
+    const isCount = (n) => Number.isInteger(n) && n >= 0;
+    const known = ["follower", "seguiti"];
+    if (typeof counts !== "object" || Object.keys(counts).some((k) => !known.includes(k)))
+      return { error: "usa IU.scan({ follower: N, seguiti: N })" };
+    const { follower, seguiti } = counts;
+    if ((follower !== undefined && !isCount(follower)) || (seguiti !== undefined && !isCount(seguiti)))
+      return { error: "follower e seguiti devono essere numeri interi ≥ 0" };
+    if (follower === undefined && seguiti === undefined) return { expected: null };
+    return { expected: { following: seguiti ?? null, followers: follower ?? null } };
   }
 
   /** true se la lista letta è più corta del contatore, oltre lo scarto ammesso. */
   const isShort = (got, expected) =>
-    got < expected - Math.max(CONFIG.COUNT_TOLERANCE_MIN, Math.ceil(expected * CONFIG.COUNT_TOLERANCE));
+    expected != null && got < expected - Math.max(CONFIG.COUNT_TOLERANCE_MIN, Math.ceil(expected * CONFIG.COUNT_TOLERANCE));
 
   async function fetchList(userId, kind, onProgress) {
     const ckKey = `${K_CK}_${kind}`;
@@ -326,10 +325,12 @@
   const OPENED = new Set(); // id dei profili già aperti con open() per questo risultato
   let RUNNING = false;
 
-  async function scan() {
+  async function scan(counts) {
     if (RUNNING) return warn("uno scan è già in corso. IU.stop() per interromperlo.");
     const userId = getCookie("ds_user_id");
     if (!userId) return err("cookie ds_user_id assente. Sei loggato su instagram.com?");
+    const { expected, error } = parseCounts(counts);
+    if (error) return err(`contatori non validi: ${error}`);
 
     RUNNING = true;
     ABORT = false;
@@ -340,9 +341,9 @@
     try {
       const onProgress = (kind, n) => ui.status(`${kind}: ${n}`);
 
-      const expected = await fetchExpected(userId);
-      if (expected) await waitFor(rand(CONFIG.DELAY_MIN, CONFIG.DELAY_MAX), "");
-      else warn("non riesco a leggere i contatori del profilo: non posso verificare che le liste siano complete.");
+      if (!expected)
+        log("Per verificare che le liste siano complete passa i numeri del profilo: " +
+            "IU.scan({ follower: N, seguiti: N })");
 
       // L'API attuale non espone follows_viewer sulla lista following:
       // servono entrambe le liste e una differenza insiemistica.
@@ -494,8 +495,10 @@
     if (r.partial)
       warn("⚠️ liste incomplete" +
            (r.expected
-             ? `: letti ${r.counts.following}/${r.expected.following} seguiti e ` +
-               `${r.counts.followers}/${r.expected.followers} follower`
+             ? ": letti " +
+               [r.expected.following != null && `${r.counts.following}/${r.expected.following} seguiti`,
+                r.expected.followers != null && `${r.counts.followers}/${r.expected.followers} follower`]
+                 .filter(Boolean).join(" e ")
              : "") +
            `. Instagram a volte tronca le liste: chi manca risulta "non ti segue" anche se ti segue. ` +
            `Riprova fra qualche ora.`);

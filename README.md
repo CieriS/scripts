@@ -113,8 +113,8 @@ Adding a script:
 
 - The Instagram script is tested against fake endpoints only. It relies on Instagram's private
   web endpoints, which can change without notice and cannot be exercised in CI.
-- Its completeness check depends on the profile counters: when Instagram does not return them,
-  a truncated list cannot be detected (the scan says so).
+- Its completeness check needs the profile numbers passed by hand to `IU.scan()`: without
+  them a truncated list cannot be detected.
 
 ## Licence
 

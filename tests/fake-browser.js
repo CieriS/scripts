@@ -22,14 +22,12 @@ const user = (pk, username = `user${pk}`, extra = {}) => ({
   ...extra,
 });
 
-/** Paginated following/followers lists plus the profile counters. */
+/** Paginated following/followers lists. */
 class FakeInstagram {
   constructor({ following = [], followers = [], pageSize = 2 } = {}) {
     this.following = following;
     this.followers = followers;
     this.pageSize = pageSize;
-    // "auto": counters match the lists. null: endpoint unavailable. Or explicit counters.
-    this.profile = "auto";
     // Optional (url) => response, checked before the built-in routes.
     this.override = null;
   }
@@ -37,16 +35,6 @@ class FakeInstagram {
   respond(url) {
     const forced = this.override?.(url);
     if (forced) return forced;
-
-    if (/^\/api\/v1\/users\/\d+\/info\/$/.test(url.pathname)) {
-      if (this.profile === null) return { status: 404, body: {} };
-      const unique = (list) => new Set(list.map((u) => u.pk)).size;
-      const counters =
-        this.profile === "auto"
-          ? { follower_count: unique(this.followers), following_count: unique(this.following) }
-          : this.profile;
-      return { status: 200, body: { user: counters, status: "ok" } };
-    }
 
     const list = url.pathname.match(/^\/api\/v1\/friendships\/\d+\/(following|followers)\/$/);
     if (list) {

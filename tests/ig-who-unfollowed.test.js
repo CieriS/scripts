@@ -145,34 +145,56 @@ test("scan: a followers list shorter than the profile counter is flagged as inco
       ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
       : null;
   const page = loadScript({ instagram });
-  const result = await page.IU.scan();
+  const result = await page.IU.scan({ follower: 40, seguiti: 40 });
 
   assert.equal(result.partial, true);
   assert.deepEqual({ ...result.expected }, { following: 40, followers: 40 });
   assert.ok(page.said("warn", /liste incomplete: letti 40\/40 seguiti e 10\/40 follower/));
 });
 
-test("scan: a small gap from the profile counter is tolerated", async () => {
+test("scan: a small gap from the given counters is tolerated", async () => {
   // Counters include deactivated accounts, lists do not.
   const instagram = new FakeInstagram({ following: range(1, 200), followers: range(1, 200) });
-  instagram.profile = { follower_count: 203, following_count: 204 };
   const page = loadScript({ instagram });
-  const result = await page.IU.scan();
+  const result = await page.IU.scan({ follower: 203, seguiti: 204 });
 
   assert.equal(result.partial, false);
+  assert.deepEqual({ ...result.expected }, { following: 204, followers: 203 });
   assert.ok(!page.said("warn", /liste incomplete/));
 });
 
-test("scan: without profile counters it completes and says it could not verify", async () => {
+test("scan: without counters it completes, unverified, and never asks Instagram for them", async () => {
   const instagram = new FakeInstagram({ following: [user(1)], followers: [user(1)] });
-  instagram.profile = null;
   const page = loadScript({ instagram });
   const result = await page.IU.scan();
 
   assert.equal(result.partial, false);
   assert.equal(result.expected, null);
   assert.deepEqual(names(result.mutual), ["user1"]);
-  assert.ok(page.said("warn", /non posso verificare/));
+  assert.ok(page.said("log", /IU\.scan\(\{ follower: N, seguiti: N \}\)/));
+  assert.ok(page.requests.every((r) => r.url.includes("/friendships/")), "only the two lists are read");
+});
+
+test("scan: counters can be given one at a time", async () => {
+  const instagram = new FakeInstagram({ following: range(1, 40), followers: range(1, 40) });
+  instagram.override = (url) =>
+    url.pathname.includes("/following/")
+      ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
+      : null;
+  const page = loadScript({ instagram });
+  const result = await page.IU.scan({ seguiti: 40 });
+
+  assert.equal(result.partial, true);
+  assert.ok(page.said("warn", /letti 10\/40 seguiti/));
+});
+
+test("scan: invalid counters are refused before any request", async () => {
+  for (const counts of [{ follower: -1 }, { seguiti: 1.5 }, { follower: "1222" }, { followers: 10 }, 7]) {
+    const page = loadScript({ instagram: new FakeInstagram({ following: [user(1)], followers: [] }) });
+    assert.equal(await page.IU.scan(counts), undefined, JSON.stringify(counts));
+    assert.equal(page.requests.length, 0);
+    assert.ok(page.said("error", /contatori non validi/));
+  }
 });
 
 test("scan: a block signal stops everything and saves no snapshot", async () => {
@@ -188,7 +210,7 @@ test("scan: a block signal stops everything and saves no snapshot", async () => 
   assert.ok(page.said("error", /feedback_required/));
   assert.equal(page.storage.has("__iu_snaps_v2"), false);
   const requestsAfterStop = page.requests.length;
-  assert.equal(requestsAfterStop, 3, "profile, first page, blocked page: nothing after the block");
+  assert.equal(requestsAfterStop, 2, "first page, blocked page: nothing after the block");
 });
 
 test("scan: an expired session is reported and saves no snapshot", async () => {
@@ -330,12 +352,12 @@ test("diff: needs two scans", async () => {
 test("diff: a comparison with an incomplete scan is marked as unreliable", async () => {
   const instagram = new FakeInstagram({ following: range(1, 40), followers: range(1, 40) });
   const page = loadScript({ instagram });
-  await page.IU.scan();
+  await page.IU.scan({ follower: 40, seguiti: 40 });
   instagram.override = (url) =>
     url.pathname.includes("/followers/")
       ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
       : null;
-  await page.IU.scan();
+  await page.IU.scan({ follower: 40, seguiti: 40 });
   const d = page.IU.diff();
 
   assert.equal(d.unreliable, true);
@@ -455,7 +477,7 @@ test("html: an incomplete scan is stated in the report", async () => {
       ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
       : null;
   const page = loadScript({ instagram });
-  await page.IU.scan();
+  await page.IU.scan({ follower: 40, seguiti: 40 });
   page.IU.html();
 
   assert.ok(page.downloads[0].text.includes("Liste incomplete"));
@@ -567,7 +589,7 @@ test("reload: an incomplete scan is still flagged after being restored", async (
       ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
       : null;
   const before = loadScript({ instagram });
-  await before.IU.scan();
+  await before.IU.scan({ follower: 40, seguiti: 40 });
 
   const after = loadScript({ instagram, storage: before.storage });
   after.IU.report();
@@ -595,29 +617,6 @@ test("reset: clears snapshots, keep list and the restored result", async () => {
 
   assert.equal(page.IU.last, null);
   assert.equal(page.storage.size, 0);
-});
-
-test("scan: a rate-limited profile counter is tried once and does not stop the scan", async () => {
-  const instagram = new FakeInstagram({ following: [user(1), user(2)], followers: [user(1)] });
-  instagram.override = (url) => (url.pathname.endsWith("/info/") ? { status: 429, body: {} } : null);
-  const page = loadScript({ instagram });
-  const result = await page.IU.scan();
-
-  assert.deepEqual(names(result.notFollowingBack), ["user2"]);
-  assert.equal(page.requests.filter((r) => r.url.endsWith("/info/")).length, 1, "no retries");
-  assert.ok(page.said("warn", /non posso verificare/));
-  assert.ok(!page.said("warn", /HTTP 429/));
-});
-
-test("scan: a block signal on the profile counter still stops everything", async () => {
-  const instagram = new FakeInstagram({ following: [user(1)], followers: [] });
-  instagram.override = (url) =>
-    url.pathname.endsWith("/info/") ? { status: 400, body: { message: "challenge_required" } } : null;
-  const page = loadScript({ instagram });
-
-  assert.equal(await page.IU.scan(), undefined);
-  assert.equal(page.requests.length, 1);
-  assert.ok(page.said("error", /challenge_required/));
 });
 
 test("diff: a comparison with a snapshot from an older version is flagged", async () => {

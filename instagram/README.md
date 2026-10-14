@@ -18,6 +18,7 @@ Comments and console messages are in Italian.
 | Command | What it does |
 |---|---|
 | `IU.scan()` | Read following and followers, save a snapshot, print the report |
+| `IU.scan({ follower: N, seguiti: N })` | Same, and check the lists against the numbers shown on your profile |
 | `IU.diff()` | Who unfollowed since the previous scan; `IU.diff(-3, -1)` compares other snapshots |
 | `IU.report()` | Who does not follow back, from the last scan |
 | `IU.html()` | Clickable HTML report |
@@ -68,16 +69,23 @@ made with the current version on, the default comparison uses only current snaps
 ### Incomplete lists
 
 Instagram sometimes returns a list shorter than the real one. Every missing account would look
-like someone who does not follow you and, at the next scan, like an unfollow. To catch this the
-scan reads the profile counters and compares them with what it read (a gap of 2%, or 3
-accounts, is tolerated: counters include deactivated accounts). When a list is too short:
+like someone who does not follow you and, at the next scan, like an unfollow. To catch this,
+pass the numbers shown on your profile:
+
+```js
+IU.scan({ follower: 1222, seguiti: 585 })
+```
+
+Either number can be left out. A gap of 2%, or 3 accounts, is tolerated: counters include
+deactivated accounts, and the profile page may have been loaded a little before the scan. When
+a list is too short:
 
 - the scan and `report()` print "liste incomplete" with the numbers read and expected;
 - the snapshot is marked, `history()` shows it as not complete, and any `diff()` that uses it
   warns that it may contain false unfollows.
 
-Wait a few hours and scan again. If the counters cannot be read, the scan continues and says
-that it could not verify the lists.
+Wait a few hours and scan again. The script does not ask Instagram for these numbers: the
+endpoint that returns them answers HTTP 429 to the web session every time.
 
 ## Other notes
 
