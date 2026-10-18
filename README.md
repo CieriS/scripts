@@ -152,6 +152,10 @@ Adding a script:
   web endpoints, which can change without notice and cannot be exercised in CI.
 - Its completeness check needs the profile numbers passed by hand to `IU.scan()`: without
   them a truncated list cannot be detected.
+- `beat-frames.py` assumes a constant tempo: songs that speed up or change tempo get a single
+  average value. The half-time correction is a threshold, not a detection, so a genuinely slow
+  song needs `--min-bpm 0`. The tests cover the arithmetic only; librosa's detection is checked
+  by hand on a real file.
 
 ## Licence
 
