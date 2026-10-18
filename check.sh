@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Single verification entry point, used locally and by CI:
-# lint every shell script, syntax-check every JavaScript file, run the Bash and Node tests.
+# lint every shell script, syntax-check every JavaScript and Python file, run the Bash, Node
+# and Python tests.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,6 +26,15 @@ while IFS= read -r -d '' file; do
 done < <(git ls-files -z -- 'tests/*.test.js')
 if [ "${#js_tests[@]}" -gt 0 ]; then
     node --test "${js_tests[@]}" || status=1
+fi
+
+
+while IFS= read -r -d '' file; do
+    python3 -m py_compile "$file" || status=1
+done < <(git ls-files -z -- '*.py')
+
+if [ -n "$(git ls-files -- 'tests/test_*.py')" ]; then
+    python3 -m unittest discover -s tests -p 'test_*.py' || status=1
 fi
 
 exit "$status"

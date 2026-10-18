@@ -1,12 +1,14 @@
 # scripts
 
-Small personal automation scripts, grouped by area. Each script is self-contained: no
-dependencies to install and nothing to build.
+Small personal automation scripts, grouped by area. Each script is self-contained: nothing to
+build, and no dependencies to install by hand (the audio script declares its own and runs with
+`uv run`).
 
 | Area | Folder | What is inside |
 |---|---|---|
 | Shell utilities | [`sh/`](sh/) | Bash helpers for the local filesystem |
 | Instagram | [`instagram/`](instagram/) | Read-only browser-console script to see who does not follow back |
+| Audio | [`audio/`](audio/) | Song tempo converted into video frames, for editing on the beat |
 
 ## Where to look
 
@@ -15,6 +17,7 @@ dependencies to install and nothing to build.
 | Find which script does what | [Structure](#structure) |
 | Run the shell helper | [Shell utilities](#shell-utilities) |
 | Run the Instagram script | [`instagram/README.md`](instagram/README.md) |
+| Find how many frames a beat lasts | [Audio](#audio) |
 | Check your changes or add a script | [Development](#development) |
 | Understand why the repository is shaped this way | [Decisions](#decisions) |
 | Know what is not covered yet | [Known limitations](#known-limitations) |
@@ -29,10 +32,13 @@ dependencies to install and nothing to build.
 ├── instagram/
 │   ├── README.md                   # usage, commands, how to read the results
 │   └── ig-who-unfollowed.js        # read-only scan, snapshots and diff between scans
+├── audio/
+│   └── beat-frames.py              # BPM of a song and beats converted into video frames
 ├── tests/
 │   ├── existingFileWithString.test.sh   # Bash tests of the shell helper
 │   ├── ig-who-unfollowed.test.js        # Node tests of the Instagram script
-│   └── fake-browser.js                  # fake browser and fake Instagram used by the tests
+│   ├── fake-browser.js                  # fake browser and fake Instagram used by the tests
+│   └── test_beat_frames.py              # Python tests of the audio script (no librosa needed)
 ├── check.sh                        # lint, syntax check and tests (also run by CI)
 └── .github/                        # CI workflow and Dependabot
 ```
@@ -62,18 +68,45 @@ bash sh/existingFileWithString.sh "TODO" /path/to/directory
 only sends GET requests, so it cannot change the account. Usage, commands and how to read the
 results are in [`instagram/README.md`](instagram/README.md).
 
+## Audio
+
+### `audio/beat-frames.py`
+
+Detects the tempo of a song with [librosa](https://librosa.org) and prints how many video
+frames one beat, two beats and half a beat last at a given frame rate, rounded to the nearest
+whole frame: the clip lengths for cutting a video (or a photo slideshow) on the beat. Only the
+first 90 seconds are analysed. librosa often reads a fast song at half its tempo (75 instead
+of 150), so a tempo below 95 BPM is doubled until it reaches 95. Output messages are in Italian.
+
+```bash
+uv run audio/beat-frames.py song.mp3 30                  # 30 fps (default)
+uv run audio/beat-frames.py song.mp3 24 --min-bpm 0      # keep a slow tempo as detected
+uv run audio/beat-frames.py song.mp3 60 --duration 30    # analyse only the first 30 seconds
+```
+
+`uv` reads the dependency list at the top of the file and installs librosa in a cached
+environment on the first run. The detected tempo is approximate (a 120 BPM click track reads
+as about 117.5): check the suggested frame counts against the timeline.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Analysis completed |
+| `1` | File not found, or no tempo detected (e.g. silence) |
+| `2` | Wrong arguments |
+
 ## Development
 
 ```bash
 ./check.sh
 ```
 
-Runs `shellcheck` on every tracked `*.sh`, `node --check` on every tracked `*.js`, the Bash
-tests in `tests/*.test.sh` and the Node tests in `tests/*.test.js` (built-in `node --test`
-runner, nothing to install). It only looks at tracked files: `git add` a new file first. CI
+Runs `shellcheck` on every tracked `*.sh`, `node --check` on every tracked `*.js`,
+`py_compile` on every tracked `*.py`, the Bash tests in `tests/*.test.sh`, the Node tests in
+`tests/*.test.js` (built-in `node --test` runner) and the Python tests in `tests/test_*.py`
+(`unittest`); nothing to install. It only looks at tracked files: `git add` a new file first. CI
 runs the same command on every push to `development` and on Dependabot's pull requests.
 
-Requirements: `bash`, `shellcheck`, `node`.
+Requirements: `bash`, `shellcheck`, `node`, `python3`; `uv` only to run the audio script.
 
 Changes are made on a branch, checked with `./check.sh` and merged locally into `development`,
 the default branch, with a fast-forward. Pull requests are used only by Dependabot.
@@ -99,6 +132,10 @@ Adding a script:
   profiles the script opens.
 - **Own code only.** The third-party console tool these scripts replaced is not in the
   repository.
+- **Python dependencies declared inside the script.** `beat-frames.py` needs librosa: the
+  inline metadata block (PEP 723) lets `uv run` install it on demand, so the repository still
+  has no setup step. The arithmetic lives in plain functions and librosa is imported only to
+  read the audio, so the tests run with the standard library alone.
 - **A single check command.** `check.sh` is what runs locally and in CI, so the two cannot
   drift apart. Tests are plain Bash or Node's built-in runner, in line with the no-dependency
   rule.
