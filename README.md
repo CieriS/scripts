@@ -1,14 +1,15 @@
 # scripts
 
 Small personal automation scripts, grouped by area. Each script is self-contained: nothing to
-build, and no dependencies to install by hand (the audio script declares its own and runs with
-`uv run`).
+build, and no dependencies to install by hand (the audio and media scripts declare their own
+and run with `uv run`).
 
 | Area | Folder | What is inside |
 |---|---|---|
 | Shell utilities | [`sh/`](sh/) | Bash helpers for the local filesystem |
 | Instagram | [`instagram/`](instagram/) | Read-only browser-console script to see who does not follow back |
 | Audio | [`audio/`](audio/) | Song tempo converted into video frames, for editing on the beat |
+| Media | [`media/`](media/) | Photos and videos sorted by kind and subject (landscape, food, people), for editing |
 
 ## Where to look
 
@@ -18,6 +19,7 @@ build, and no dependencies to install by hand (the audio script declares its own
 | Run the shell helper | [Shell utilities](#shell-utilities) |
 | Run the Instagram script | [`instagram/README.md`](instagram/README.md) |
 | Find how many frames a beat lasts | [Audio](#audio) |
+| Sort photos and videos by subject | [`media/README.md`](media/README.md) |
 | Check your changes or add a script | [Development](#development) |
 | Understand why the repository is shaped this way | [Decisions](#decisions) |
 | Know what is not covered yet | [Known limitations](#known-limitations) |
@@ -34,11 +36,15 @@ build, and no dependencies to install by hand (the audio script declares its own
 │   └── ig-who-unfollowed.js        # read-only scan, snapshots and diff between scans
 ├── audio/
 │   └── beat-frames.py              # BPM of a song and beats converted into video frames
+├── media/
+│   ├── README.md                   # usage, result, supported files, edge cases, limitations
+│   └── sort-media.py               # photos/videos sorted by subject with a local CLIP model
 ├── tests/
 │   ├── existingFileWithString.test.sh   # Bash tests of the shell helper
 │   ├── ig-who-unfollowed.test.js        # Node tests of the Instagram script
 │   ├── fake-browser.js                  # fake browser and fake Instagram used by the tests
-│   └── test_beat_frames.py              # Python tests of the audio script (no librosa needed)
+│   ├── test_beat_frames.py              # Python tests of the audio script (no librosa needed)
+│   └── test_sort_media.py               # Python tests of the media script (fake classifier)
 ├── check.sh                        # lint, syntax check and tests (also run by CI)
 └── .github/                        # CI workflow and Dependabot
 ```
@@ -94,6 +100,20 @@ as about 117.5): check the suggested frame counts against the timeline.
 | `1` | File not found, or no tempo detected (e.g. silence) |
 | `2` | Wrong arguments |
 
+## Media
+
+`sort-media.py` copies the photos and videos of one or more folders into
+`foto|video/{ambiente,cibo,persone,altro,incerti,illeggibili}/`, classifying each file locally
+with CLIP (videos on a few frames extracted with ffmpeg), and writes a CSV report of every
+decision. Originals are never modified unless `--move` is given; `--dry-run` only shows the plan.
+
+```bash
+uv run media/sort-media.py ~/Desktop/viaggio --out ~/Desktop/ordinati --dry-run
+```
+
+Options, result layout, supported formats, edge cases and limitations are in
+[`media/README.md`](media/README.md).
+
 ## Development
 
 ```bash
@@ -106,7 +126,8 @@ Runs `shellcheck` on every tracked `*.sh`, `node --check` on every tracked `*.js
 (`unittest`); nothing to install. It only looks at tracked files: `git add` a new file first. CI
 runs the same command on every push to `development` and on Dependabot's pull requests.
 
-Requirements: `bash`, `shellcheck`, `node`, `python3`; `uv` only to run the audio script.
+Requirements: `bash`, `shellcheck`, `node`, `python3`; `uv` only to run the audio and media
+scripts, `ffmpeg` for the media script's video tests (skipped without it).
 
 Changes are made on a branch, checked with `./check.sh` and merged locally into `development`,
 the default branch, with a fast-forward. Pull requests are used only by Dependabot.
@@ -132,10 +153,15 @@ Adding a script:
   profiles the script opens.
 - **Own code only.** The third-party console tool these scripts replaced is not in the
   repository.
-- **Python dependencies declared inside the script.** `beat-frames.py` needs librosa: the
-  inline metadata block (PEP 723) lets `uv run` install it on demand, so the repository still
-  has no setup step. The arithmetic lives in plain functions and librosa is imported only to
-  read the audio, so the tests run with the standard library alone.
+- **Python dependencies declared inside the script.** `beat-frames.py` needs librosa and
+  `sort-media.py` needs PyTorch and OpenCLIP: the inline metadata block (PEP 723) lets `uv run`
+  install them on demand, so the repository still has no setup step. The logic lives in plain
+  functions and the heavy libraries are imported only where the audio or the images are read,
+  so the tests run with the standard library alone.
+- **Media are classified locally with CLIP, zero-shot.** No cloud service (private photos,
+  cost per image) and no training: a category is a few English phrases, so adding one is a
+  one-line change. Files are copied by default and never overwritten, so a wrong
+  classification costs nothing.
 - **A single check command.** `check.sh` is what runs locally and in CI, so the two cannot
   drift apart. Tests are plain Bash or Node's built-in runner, in line with the no-dependency
   rule.
@@ -152,6 +178,9 @@ Adding a script:
   web endpoints, which can change without notice and cannot be exercised in CI.
 - Its completeness check needs the profile numbers passed by hand to `IU.scan()`: without
   them a truncated list cannot be detected.
+- `sort-media.py` puts each file in one category only, and its tests use a fake classifier:
+  the real model's accuracy is checked by hand on real photos (see
+  [`media/README.md`](media/README.md#limitations)).
 - `beat-frames.py` assumes a constant tempo: songs that speed up or change tempo get a single
   average value. The half-time correction is a threshold, not a detection, so a genuinely slow
   song needs `--min-bpm 0`. The tests cover the arithmetic only; librosa's detection is checked
