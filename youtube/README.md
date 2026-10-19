@@ -13,7 +13,9 @@ uv run youtube/transcript.py URL --lang en,it -o transcript.txt
 uv run youtube/transcript.py URL --timestamps
 ```
 
-Requirements: `uv` and `yt-dlp` (`brew install yt-dlp`). The local fallback also needs
+Requirements: `uv` and `yt-dlp` (`brew install yt-dlp`). Keep yt-dlp up to date: YouTube changes often and
+an old version stops reading subtitles or audio, so the first fix for any download error is
+`brew upgrade yt-dlp`. The local fallback also needs
 `ffmpeg` and a Mac with Apple Silicon; `uv` installs mlx-whisper from the dependency block at
 the top of the file.
 

@@ -198,8 +198,8 @@ class YtdlpErrors(unittest.TestCase):
             "ERROR: [youtube] x: Private video. Sign in if": "il video è privato",
             "ERROR: [youtube] x: Video unavailable": "il video non è disponibile",
             "ERROR: Sign in to confirm your age": "il video richiede l'accesso (età, abbonamento o membri)",
-            "WARNING: a\nERROR: boom\n": "yt-dlp non è riuscito a leggere il video (ERROR: boom)",
-            "": "yt-dlp non è riuscito a leggere il video (nessun dettaglio)",
+            "WARNING: a\nERROR: boom\n": "yt-dlp non è riuscito a leggere il video (ERROR: boom); prova ad aggiornarlo con brew upgrade yt-dlp",
+            "": "yt-dlp non è riuscito a leggere il video (nessun dettaglio); prova ad aggiornarlo con brew upgrade yt-dlp",
         }
         for stderr, message in cases.items():
             with self.subTest(stderr=stderr):

@@ -239,7 +239,10 @@ def ytdlp_error_message(stderr):
     if "unavailable" in lowered or "not available" in lowered or "removed" in lowered:
         return "il video non è disponibile"
     last = next((line for line in reversed(stderr.strip().splitlines()) if line.strip()), "")
-    return f"yt-dlp non è riuscito a leggere il video ({last or 'nessun dettaglio'})"
+    return (
+        f"yt-dlp non è riuscito a leggere il video ({last or 'nessun dettaglio'}); "
+        "prova ad aggiornarlo con brew upgrade yt-dlp"
+    )
 
 
 # --- I/O ------------------------------------------------------------------------------------
