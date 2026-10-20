@@ -210,6 +210,10 @@ Adding a script:
   song needs `--min-bpm 0`. The tests cover the arithmetic only; librosa's detection is checked
   by hand on a real file.
 
+## Git hooks
+
+`.githooks/pre-push` runs before every push: a secret scan of the outgoing commits (gitleaks, or its Docker image when the binary is missing) and then the fast checks (`./check.sh`). Enable it once per clone with `git config core.hooksPath .githooks`. Skip it once with `git push --no-verify`. On CI, `.github/workflows/secret-scan.yml` scans the whole history of every branch and tag.
+
 ## Licence
 
 No licence is granted: the code is public to be read, not to be reused.
