@@ -3,16 +3,18 @@
 # requires-python = ">=3.10"
 # dependencies = ["mlx-whisper>=0.4; sys_platform == 'darwin' and platform_machine == 'arm64'"]
 # ///
-"""Print the full transcript of a YouTube video as clean, readable text.
+"""Print the full transcript of an online video as clean, readable text.
 
 Usage:
-    uv run youtube/transcript.py <url> [--lang it,en] [-o FILE] [--timestamps]
-        [--model REPO] [--no-fallback]
+    uv run video/transcript.py <url> [--lang it,en] [-o FILE] [--timestamps]
+        [--model REPO] [--no-fallback] [--cookies-from-browser BROWSER]
 
-Subtitles are read with yt-dlp (Homebrew binary) without downloading the video: manual
-subtitles first, then YouTube's automatic captions in the video's original language. When a
-video has none, only the audio is downloaded and transcribed locally with mlx-whisper
-(Apple Silicon only; the model is downloaded on the first run). Temporary files live in a
+Works with any site yt-dlp (Homebrew binary) supports: YouTube, Instagram, TikTok, X,
+Facebook, Vimeo, Reddit... Subtitles are read without downloading the video: manual subtitles
+first, then automatic captions in the video's original language. When a video has none, only
+the audio is downloaded and transcribed locally with mlx-whisper (Apple Silicon only; the
+model is downloaded on the first run). No login is used unless --cookies-from-browser is
+given. One video at a time: posts with several videos are rejected. Temporary files live in a
 temporary directory that is always removed. Output messages are in Italian.
 """
 
@@ -50,6 +52,11 @@ SOURCE_LABELS = {
 }
 
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# yt-dlp phrasings of "log in to see this", across sites
+LOGIN_HINTS = (
+    "sign in", "login", "log in", "logged-in", "authentication", "members-only",
+    "confirm your age", "--cookies",
+)
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 
 
@@ -69,25 +76,58 @@ class Source:
 
 
 def normalize_url(url):
-    """Return the canonical watch URL of a single video, or raise TranscriptError."""
-    parsed = urlparse(url.strip())
+    """Check a video URL; YouTube URLs become the canonical watch URL (playlist dropped).
+
+    Any other http(s) URL is passed to yt-dlp as it is: yt-dlp knows which sites it supports.
+    """
+    url = url.strip()
+    parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or "." not in host:
+        raise TranscriptError(f"URL non valido: {url!r} (serve l'indirizzo http(s) di un video)", EXIT_USAGE)
+    if host not in YOUTUBE_HOSTS and host not in ("youtu.be", "www.youtu.be"):
+        return url
     video_id = None
-    if parsed.scheme in ("http", "https"):
-        if host in ("youtu.be", "www.youtu.be"):
-            video_id = parsed.path.strip("/").split("/")[0]
-        elif host in YOUTUBE_HOSTS:
-            parts = parsed.path.strip("/").split("/")
-            if parts[0] == "watch":
-                video_id = parse_qs(parsed.query).get("v", [""])[0]
-            elif parts[0] in ("shorts", "live", "embed") and len(parts) > 1:
-                video_id = parts[1]
+    if host in ("youtu.be", "www.youtu.be"):
+        video_id = parsed.path.strip("/").split("/")[0]
+    else:
+        parts = parsed.path.strip("/").split("/")
+        if parts[0] == "watch":
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        elif parts[0] in ("shorts", "live", "embed") and len(parts) > 1:
+            video_id = parts[1]
     if not video_id or not VIDEO_ID.match(video_id):
         raise TranscriptError(
             f"URL non valido: {url!r} (serve l'indirizzo di un singolo video YouTube)",
             EXIT_USAGE,
         )
     return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def check_single_video(info):
+    """Reject posts with several videos (carousels, threads): one video at a time."""
+    if info.get("_type") in ("playlist", "multi_video"):
+        count = len(info.get("entries") or [])
+        raise TranscriptError(
+            f"il link contiene {count or 'più'} video (carosello, thread o playlist): "
+            "per ora si trascrive un video alla volta"
+        )
+
+
+def has_audio(info):
+    """False only when yt-dlp lists formats and every one of them is video only.
+
+    Instagram without login serves video-only files: there is nothing to transcribe.
+    """
+    formats = info.get("formats")
+    if not formats:
+        return True  # nothing listed: let the download decide
+    return any(f.get("acodec") != "none" for f in formats)
+
+
+def last_line(text):
+    """Last non-empty line of a multi-line message (ffmpeg prints its whole banner)."""
+    return next((line.strip() for line in reversed(str(text).splitlines()) if line.strip()), "")
 
 
 def _matches(key, lang):
@@ -223,8 +263,9 @@ def format_header(info, url, source_label):
     return "\n".join(
         [
             f"Titolo: {info.get('title') or '?'}",
-            f"Canale: {info.get('channel') or info.get('uploader') or '?'}",
-            f"URL: {url}",
+            f"Autore: {info.get('channel') or info.get('uploader') or '?'}",
+            f"Piattaforma: {info.get('extractor_key') or info.get('extractor') or '?'}",
+            f"URL: {info.get('webpage_url') or url}",
             f"Fonte: {source_label}",
         ]
     )
@@ -232,13 +273,34 @@ def format_header(info, url, source_label):
 
 def ytdlp_error_message(stderr):
     lowered = stderr.lower()
+    if "cookies database" in lowered:
+        return (
+            "non trovo i cookie di quel browser: controlla il nome in --cookies-from-browser e "
+            "che sia il browser in cui hai fatto l'accesso al sito"
+        )
+    if "operation not permitted" in lowered and "cookies" in lowered:
+        return (
+            "macOS non permette di leggere i cookie di Safari: dai l'accesso completo al disco "
+            "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza) o usa un "
+            "altro browser"
+        )
     if "private video" in lowered:
         return "il video è privato"
-    if "sign in" in lowered or "members-only" in lowered or "confirm your age" in lowered:
-        return "il video richiede l'accesso (età, abbonamento o membri)"
+    if any(hint in lowered for hint in LOGIN_HINTS):
+        return (
+            "il sito chiede l'accesso per questo video (login, età o membri); se lo vedi nel "
+            "browser, riprova con --cookies-from-browser e il nome del browser in cui hai "
+            "fatto l'accesso (chrome, brave, firefox, safari...)"
+        )
+    if "unsupported url" in lowered:
+        return "sito o indirizzo non supportato da yt-dlp"
+    if "no video could be found" in lowered or "no video formats found" in lowered:
+        return "nel link non c'è nessun video"
+    if "429" in lowered or "rate-limit" in lowered or "rate limit" in lowered:
+        return "il sito sta limitando le richieste: riprova più tardi"
     if "unavailable" in lowered or "not available" in lowered or "removed" in lowered:
         return "il video non è disponibile"
-    last = next((line for line in reversed(stderr.strip().splitlines()) if line.strip()), "")
+    last = last_line(stderr)
     return (
         f"yt-dlp non è riuscito a leggere il video ({last or 'nessun dettaglio'}); "
         "prova ad aggiornarlo con brew upgrade yt-dlp"
@@ -256,21 +318,23 @@ def run_ytdlp(args):
     return result.stdout
 
 
-def fetch_info(url):
-    out = run_ytdlp(["--dump-single-json", "--no-playlist", "--skip-download", url])
+def fetch_info(url, options=()):
+    out = run_ytdlp(["--dump-single-json", "--no-playlist", "--skip-download", *options, url])
     try:
-        return json.loads(out)
+        info = json.loads(out)
     except json.JSONDecodeError as exc:
         raise TranscriptError("risposta di yt-dlp non leggibile") from exc
+    check_single_video(info)
+    return info
 
 
-def download_subtitles(url, source, tmp):
+def download_subtitles(url, source, tmp, options=()):
     flag = "--write-subs" if source.kind == "manual" else "--write-auto-subs"
     run_ytdlp(
         [
             "--skip-download", "--no-playlist", flag,
             "--sub-langs", f"^{re.escape(source.lang)}$", "--sub-format", "vtt",
-            "-o", str(Path(tmp) / "subs"), url,
+            "-o", str(Path(tmp) / "subs"), *options, url,
         ]
     )
     files = sorted(Path(tmp).glob("subs*.vtt"))
@@ -279,8 +343,9 @@ def download_subtitles(url, source, tmp):
     return files[0].read_text(encoding="utf-8")
 
 
-def download_audio(url, tmp):
-    run_ytdlp(["-f", "bestaudio/best", "--no-playlist", "-o", str(Path(tmp) / "audio.%(ext)s"), url])
+def download_audio(url, tmp, options=()):
+    out = str(Path(tmp) / "audio.%(ext)s")
+    run_ytdlp(["-f", "bestaudio/best", "--no-playlist", "-o", out, *options, url])
     files = [p for p in Path(tmp).glob("audio.*") if not p.name.endswith(".part")]
     if not files:
         raise TranscriptError("audio non scaricato")
@@ -301,27 +366,34 @@ def transcribe_local(audio, model, language):
     try:
         result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=model, language=language)
     except Exception as exc:  # model download, decoding: report, do not crash
-        raise TranscriptError(f"trascrizione locale fallita: {exc}") from exc
+        raise TranscriptError(f"trascrizione locale fallita: {last_line(exc)}") from exc
     return [(seg["start"], clean_text(seg["text"])) for seg in result.get("segments", [])]
 
 
-def transcript(url, langs, timestamps, model, fallback):
+def transcript(url, langs, timestamps, model, fallback, cookies_from_browser=None):
     """Return the full text (header + paragraphs) for a video."""
     url = normalize_url(url)
     if shutil.which("yt-dlp") is None:
         raise TranscriptError("yt-dlp non trovato: installalo con brew install yt-dlp", EXIT_NO_YTDLP)
-    with tempfile.TemporaryDirectory(prefix="yt-transcript-") as tmp:
-        info = fetch_info(url)
+    options = ["--cookies-from-browser", cookies_from_browser] if cookies_from_browser else []
+    with tempfile.TemporaryDirectory(prefix="video-transcript-") as tmp:
+        info = fetch_info(url, options)
         source = choose_source(info, langs)
         if source:
-            cues = parse_vtt(download_subtitles(url, source, tmp))
+            cues = parse_vtt(download_subtitles(url, source, tmp, options))
             words = merge_cues(cues, rolling=source.kind == "auto")
             label = f"{SOURCE_LABELS[source.kind]} ({source.lang})"
         else:
             if not fallback:
                 raise TranscriptError("nessun sottotitolo disponibile e trascrizione locale disattivata")
+            if not has_audio(info):
+                hint = "" if cookies_from_browser else (
+                    " (succede su Instagram senza login): riprova con --cookies-from-browser e il "
+                    "nome del browser in cui hai fatto l'accesso"
+                )
+                raise TranscriptError(f"nessun sottotitolo e il sito fornisce solo il video senza audio{hint}")
             print(f"Nessun sottotitolo: scarico l'audio e lo trascrivo con {model}...", file=sys.stderr)
-            segments = transcribe_local(download_audio(url, tmp), model, info.get("language"))
+            segments = transcribe_local(download_audio(url, tmp, options), model, info.get("language"))
             words = merge_cues(segments, rolling=False)
             label = f"{SOURCE_LABELS['local']} ({model})"
         if not words:
@@ -332,20 +404,25 @@ def transcript(url, langs, timestamps, model, fallback):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="transcript.py",
-        description="Trascrizione completa di un video YouTube come testo leggibile.",
+        description=(
+            "Trascrizione completa di un video online (YouTube, Instagram, TikTok, X, Facebook, "
+            "Vimeo, Reddit e gli altri siti di yt-dlp) come testo leggibile."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""esempi:
-  uv run youtube/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
-  uv run youtube/transcript.py URL --lang en,it -o trascrizione.txt
-  uv run youtube/transcript.py URL --timestamps
-  uv run youtube/transcript.py URL --no-fallback
-  uv run youtube/transcript.py URL --model mlx-community/whisper-small-mlx
+  uv run video/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
+  uv run video/transcript.py "https://www.instagram.com/reel/ID/"
+  uv run video/transcript.py URL --lang en,it -o trascrizione.txt
+  uv run video/transcript.py URL --timestamps
+  uv run video/transcript.py URL --no-fallback
+  uv run video/transcript.py URL --model mlx-community/whisper-small-mlx
+  uv run video/transcript.py URL --cookies-from-browser chrome   # solo se il sito chiede il login
 
 fonte: sottotitoli manuali > automatici (lingua originale) > trascrizione locale.
 exit code: 0 ok, 1 video non disponibile o trascrizione fallita, 2 argomenti o URL non
 validi, 3 yt-dlp assente.""",
     )
-    parser.add_argument("url", help="indirizzo di un singolo video YouTube")
+    parser.add_argument("url", help="indirizzo di un singolo video")
     parser.add_argument(
         "--lang", default=",".join(DEFAULT_LANGS),
         help="lingue preferite dei sottotitoli, in ordine (default: %(default)s)",
@@ -360,6 +437,11 @@ validi, 3 yt-dlp assente.""",
         "--no-fallback", action="store_true",
         help="non trascrivere l'audio in locale quando mancano i sottotitoli",
     )
+    parser.add_argument(
+        "--cookies-from-browser", metavar="BROWSER",
+        help="usa la sessione di questo browser (chrome, safari, firefox...) per i video che "
+        "richiedono il login; senza, nessun accesso",
+    )
     args = parser.parse_args(argv)
     args.langs = [lang.strip() for lang in args.lang.split(",") if lang.strip()]
     if not args.langs:
@@ -370,7 +452,10 @@ validi, 3 yt-dlp assente.""",
 def main(argv=None):
     args = parse_args(argv)
     try:
-        text = transcript(args.url, args.langs, args.timestamps, args.model, not args.no_fallback)
+        text = transcript(
+            args.url, args.langs, args.timestamps, args.model, not args.no_fallback,
+            args.cookies_from_browser,
+        )
     except TranscriptError as exc:
         print(f"Errore: {exc}", file=sys.stderr)
         return exc.code

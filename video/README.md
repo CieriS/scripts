@@ -1,19 +1,24 @@
-# YouTube
+# Video
 
 ## `transcript.py`
 
-Prints the full transcript of one YouTube video as clean, readable text: no timestamps, tags
+Prints the full transcript of one online video as clean, readable text, ready to paste
+somewhere else for analysis. It works with every site yt-dlp supports (YouTube, Instagram,
+TikTok, X, Facebook, Vimeo, Reddit…), but how much works **without logging in** depends on
+the site: see [Sites without login](#sites-without-login). The output has no timestamps, tags
+or repeated lines and is grouped into paragraphs. no timestamps, tags
 or repeated lines, grouped into paragraphs. Nothing is left in the current directory: the
 subtitles and the audio are downloaded into a temporary directory that is always removed,
 also on errors. Messages are in Italian and go to stderr, so stdout holds only the transcript.
 
 ```bash
-uv run youtube/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
-uv run youtube/transcript.py URL --lang en,it -o transcript.txt
-uv run youtube/transcript.py URL --timestamps
+uv run video/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
+uv run video/transcript.py "https://www.instagram.com/reel/ID/" --cookies-from-browser chrome
+uv run video/transcript.py URL --lang en,it -o transcript.txt
+uv run video/transcript.py URL --timestamps
 ```
 
-Requirements: `uv` and `yt-dlp` (`brew install yt-dlp`). Keep yt-dlp up to date: YouTube changes often and
+Requirements: `uv` and `yt-dlp` (`brew install yt-dlp`). Keep yt-dlp up to date: the sites change often and
 an old version stops reading subtitles or audio, so the first fix for any download error is
 `brew upgrade yt-dlp`. The local fallback also needs
 `ffmpeg` and a Mac with Apple Silicon; `uv` installs mlx-whisper from the dependency block at
@@ -23,7 +28,8 @@ The output starts with a header:
 
 ```
 Titolo: …
-Canale: …
+Autore: …
+Piattaforma: Youtube
 URL: https://www.youtube.com/watch?v=…
 Fonte: sottotitoli manuali (it)
 
@@ -34,18 +40,19 @@ First paragraph…
 
 | Option | Default | Effect |
 |---|---|---|
-| `url` | — | One video: `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`. A `list=` parameter is ignored: playlists are not supported |
+| `url` | — | One video, `http(s)` on any site yt-dlp supports. YouTube URLs (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`) are normalized and a `list=` parameter is dropped. Posts with several videos (carousels, threads, playlists) are rejected |
 | `--lang it,en` | `it,en` | Preferred subtitle languages, in order. `en` also matches `en-US`, `en-GB` |
 | `-o`, `--output FILE` | stdout | Write the transcript to a file |
 | `--timestamps` | off | Start each paragraph with `[mm:ss]` (or `[h:mm:ss]`) |
 | `--model REPO` | `mlx-community/whisper-large-v3-turbo` | mlx-whisper model (Hugging Face repository) of the local fallback, e.g. `mlx-community/whisper-small-mlx` for a faster, less accurate run |
 | `--no-fallback` | off | Fail instead of downloading and transcribing the audio |
+| `--cookies-from-browser NAME` | off | Use the login of this browser (`chrome`, `brave`, `firefox`, `safari`…) for sites that require it. Without it no login is ever used |
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Transcript printed or written |
-| `1` | Video private, unavailable or restricted; no subtitles and the local transcription failed or was disabled; empty transcript |
-| `2` | Wrong arguments or not a single-video YouTube URL |
+| `1` | Video private, unavailable, behind a login or with several videos; site not supported; no subtitles and no audio, or the local transcription failed or was disabled; empty transcript |
+| `2` | Wrong arguments, not an `http(s)` URL, or a YouTube URL that is not a single video |
 | `3` | `yt-dlp` not found |
 
 ### How the source is chosen
@@ -57,8 +64,30 @@ From the metadata returned by `yt-dlp --dump-single-json`, in this order:
 3. **Automatic captions** in the original language (the raw `xx-orig` track when present).
 4. **Local transcription**: only the audio is downloaded and transcribed with mlx-whisper.
 
+Before downloading the audio, the script checks the formats listed by yt-dlp: when all of
+them are video only, it stops with an error instead of downloading a file without sound.
+
 Automatic captions in other languages are YouTube's machine translations and are never used,
 so a video in Spanish gives a Spanish transcript even with `--lang it,en`.
+
+### Sites without login
+
+Checked on 2026-10-21 with yt-dlp 2026.08.19, using the sample videos of yt-dlp's own tests:
+
+| Site | Without login |
+|---|---|
+| YouTube | Works: subtitles, otherwise audio |
+| Instagram | Metadata only: the files have no audio track, so there is nothing to transcribe. Carousels are recognized and rejected |
+| TikTok, Reddit, Vimeo | yt-dlp is asked to log in |
+| Facebook | yt-dlp cannot parse the page |
+| X | Depends on the post |
+
+So for Instagram, TikTok and the others `--cookies-from-browser` is needed: yt-dlp reads the
+session of a browser where you are already logged in, locally, and nothing is stored. The
+browser has to be one you use: a browser that was never opened has no cookies. Safari's
+cookies can be read only after giving the terminal app Full Disk Access in System Settings;
+Chrome-based browsers ask once for the keychain. The login path has not been verified live
+yet. When a site starts working without login in a newer yt-dlp, nothing needs to change.
 
 ### Text cleanup
 
@@ -90,8 +119,11 @@ clear error while subtitles keep working.
   `large-v3-turbo`, kept in the Hugging Face cache, `~/.cache/huggingface`), then a few
   seconds per minute of audio. In a test a 19-second video took about 6 minutes on the first
   run, almost all of it the download. Whisper can invent text over long silences or music.
-- **YouTube changes often**: when subtitles or audio stop downloading, update yt-dlp first
+- **The sites change often**: when subtitles or audio stop downloading, update yt-dlp first
   (`brew upgrade yt-dlp`).
-- Restricted videos (private, age-gated, members-only) are not read: the script does not use
-  browser cookies.
+- Most social sites need a login (see [Sites without login](#sites-without-login)), and a
+  login-only video read through `--cookies-from-browser` uses your account: heavy use can make
+  the site rate-limit or flag it.
+- One video at a time: carousels and threads with several videos are rejected.
+- The text of a post (caption, description) is not included, only what is said.
 - The tests use a fake yt-dlp and a fake engine; the real paths were checked by hand.

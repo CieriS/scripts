@@ -1,4 +1,4 @@
-"""Tests of youtube/transcript.py: VTT cleanup, source choice and the main flow with a fake
+"""Tests of video/transcript.py: VTT cleanup, source choice and the main flow with a fake
 yt-dlp (no network, no mlx-whisper)."""
 
 import contextlib
@@ -11,9 +11,9 @@ import unittest
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).parent.parent
-FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "youtube"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "video"
 
-spec = importlib.util.spec_from_file_location("transcript", ROOT / "youtube" / "transcript.py")
+spec = importlib.util.spec_from_file_location("transcript", ROOT / "video" / "transcript.py")
 tr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tr)
 
@@ -47,17 +47,72 @@ class NormalizeUrl(unittest.TestCase):
         for url in [
             "",
             "abcdefghijk",
-            "https://vimeo.com/12345",
             "https://www.youtube.com/playlist?list=PL123",
             "https://www.youtube.com/watch?v=short",
             "https://www.youtube.com/@canale",
             "ftp://youtu.be/abcdefghijk",
-            "https://evil.example/watch?v=abcdefghijk",
+            "ftp://www.instagram.com/reel/abc/",
+            "http://localhost/video",
+            "instagram.com/reel/abc/",
         ]:
             with self.subTest(url=url):
                 with self.assertRaises(tr.TranscriptError) as ctx:
                     tr.normalize_url(url)
                 self.assertEqual(ctx.exception.code, tr.EXIT_USAGE)
+
+
+class NormalizeOtherSites(unittest.TestCase):
+    def test_other_sites_passed_unchanged(self):
+        for url in [
+            "https://www.instagram.com/reel/Abc123/",
+            "https://www.tiktok.com/@utente/video/1234567890",
+            "https://x.com/utente/status/1234567890",
+            "https://vimeo.com/12345",
+            "https://www.facebook.com/watch/?v=1234567890",
+        ]:
+            with self.subTest(url=url):
+                self.assertEqual(tr.normalize_url(f" {url} "), url)
+
+
+class CheckSingleVideo(unittest.TestCase):
+    def test_single_video_accepted(self):
+        tr.check_single_video({"_type": "video"})
+        tr.check_single_video({})
+
+    def test_carousel_rejected_with_count(self):
+        with self.assertRaises(tr.TranscriptError) as ctx:
+            tr.check_single_video({"_type": "playlist", "entries": [{}, {}, {}]})
+        self.assertIn("contiene 3 video", str(ctx.exception))
+
+    def test_multi_video_without_entries(self):
+        with self.assertRaises(tr.TranscriptError) as ctx:
+            tr.check_single_video({"_type": "multi_video"})
+        self.assertIn("contiene più video", str(ctx.exception))
+
+
+class HasAudio(unittest.TestCase):
+    def test_video_only_formats(self):
+        info = {"formats": [{"acodec": "none", "vcodec": "avc1"}, {"acodec": "none"}]}
+        self.assertFalse(tr.has_audio(info))
+
+    def test_one_format_with_audio(self):
+        self.assertTrue(tr.has_audio({"formats": [{"acodec": "none"}, {"acodec": "mp4a.40.2"}]}))
+
+    def test_unknown_codec_counts_as_audio(self):
+        self.assertTrue(tr.has_audio({"formats": [{"vcodec": "unknown"}]}))
+
+    def test_no_formats_listed(self):
+        self.assertTrue(tr.has_audio({}))
+        self.assertTrue(tr.has_audio({"formats": []}))
+
+
+class LastLine(unittest.TestCase):
+    def test_last_non_empty_line(self):
+        self.assertEqual(tr.last_line("ffmpeg version 9\n  banner\nInvalid data found\n\n"), "Invalid data found")
+
+    def test_empty(self):
+        self.assertEqual(tr.last_line(""), "")
+        self.assertEqual(tr.last_line(OSError()), "")
 
 
 class ParseVtt(unittest.TestCase):
@@ -192,12 +247,35 @@ class ChooseSource(unittest.TestCase):
         self.assertIsNone(tr.choose_source({"subtitles": None, "automatic_captions": None}, ["it"]))
 
 
+LOGIN = (
+    "il sito chiede l'accesso per questo video (login, età o membri); se lo vedi nel "
+    "browser, riprova con --cookies-from-browser e il nome del browser in cui hai "
+    "fatto l'accesso (chrome, brave, firefox, safari...)"
+)
+
+
 class YtdlpErrors(unittest.TestCase):
     def test_messages(self):
         cases = {
             "ERROR: [youtube] x: Private video. Sign in if": "il video è privato",
             "ERROR: [youtube] x: Video unavailable": "il video non è disponibile",
-            "ERROR: Sign in to confirm your age": "il video richiede l'accesso (età, abbonamento o membri)",
+            "ERROR: Sign in to confirm your age": LOGIN,
+            "ERROR: [TikTok] 1: TikTok is requiring login for access to this content. Use "
+            "--cookies-from-browser or --cookies for the authentication.": LOGIN,
+            "ERROR: [Reddit] x: Account authentication is required.": LOGIN,
+            "ERROR: [Instagram] x: Instagram sent an empty media response. If it is not, then "
+            "use --cookies-from-browser or --cookies": LOGIN,
+            "ERROR: [vimeo] 1: The web client only works when logged-in.": LOGIN,
+            'ERROR: could not find brave cookies database in "/profilo/finto"':
+                "non trovo i cookie di quel browser: controlla il nome in --cookies-from-browser e "
+                "che sia il browser in cui hai fatto l'accesso al sito",
+            "ERROR: [Errno 1] Operation not permitted: '/finto/Cookies.binarycookies'":
+                "macOS non permette di leggere i cookie di Safari: dai l'accesso completo al disco "
+                "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza) o usa un "
+                "altro browser",
+            "ERROR: Unsupported URL: https://example.com/": "sito o indirizzo non supportato da yt-dlp",
+            "ERROR: [twitter] 1: No video could be found in this tweet": "nel link non c'è nessun video",
+            "ERROR: HTTP Error 429: Too Many Requests": "il sito sta limitando le richieste: riprova più tardi",
             "WARNING: a\nERROR: boom\n": "yt-dlp non è riuscito a leggere il video (ERROR: boom); prova ad aggiornarlo con brew upgrade yt-dlp",
             "": "yt-dlp non è riuscito a leggere il video (nessun dettaglio); prova ad aggiornarlo con brew upgrade yt-dlp",
         }
@@ -239,7 +317,10 @@ class FakeYtdlp:
         return ""
 
 
-INFO = {"title": "Cappelli per comete", "channel": "Canale Inventato", "language": "it"}
+INFO = {
+    "title": "Cappelli per comete", "channel": "Canale Inventato", "language": "it",
+    "extractor_key": "Youtube",
+}
 
 
 class Main(unittest.TestCase):
@@ -254,12 +335,12 @@ class Main(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def run_main(self, fake, *args, transcribe=None):
+    def run_main(self, fake, *args, transcribe=None, url=URL):
         out, err = io.StringIO(), io.StringIO()
         local = transcribe or mock.Mock(side_effect=AssertionError("fallback non atteso"))
         with mock.patch.object(tr, "run_ytdlp", fake), mock.patch.object(tr, "transcribe_local", local), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = tr.main([URL, *args])
+            code = tr.main([url, *args])
         return code, out.getvalue(), err.getvalue()
 
     def assert_tmp_removed(self):
@@ -270,7 +351,7 @@ class Main(unittest.TestCase):
         code, out, _ = self.run_main(fake)
         self.assertEqual(code, 0)
         self.assertTrue(out.startswith(
-            "Titolo: Cappelli per comete\nCanale: Canale Inventato\n"
+            "Titolo: Cappelli per comete\nAutore: Canale Inventato\nPiattaforma: Youtube\n"
             f"URL: {URL}\nFonte: sottotitoli manuali (it)\n\nBenvenuti"
         ))
         self.assertIn("--write-subs", fake.calls[1])
@@ -339,7 +420,7 @@ class Main(unittest.TestCase):
         fake = FakeYtdlp(INFO)
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(tr, "run_ytdlp", fake), contextlib.redirect_stderr(err):
-            code = tr.main(["https://vimeo.com/1"])
+            code = tr.main(["ftp://vimeo.com/1"])
         self.assertEqual(code, tr.EXIT_USAGE)
         self.assertEqual(fake.calls, [])
         self.assertIn("URL non valido", err.getvalue())
@@ -358,6 +439,68 @@ class Main(unittest.TestCase):
         self.assertEqual((code, out), (0, ""))
         self.assertIn("Fonte: sottotitoli manuali (it)", target.read_text(encoding="utf-8"))
         self.assertIn("salvata", err)
+
+    def test_instagram_reel_without_subtitles(self):
+        reel = "https://www.instagram.com/reel/Abc123/"
+        info = {
+            "_type": "video", "title": "Video by utente_finto", "uploader": "Utente Finto",
+            "channel": "utente_finto", "extractor_key": "Instagram", "webpage_url": reel,
+        }
+        fake = FakeYtdlp(info)
+        local = mock.Mock(return_value=[(0.0, "Ecco la ricetta inventata.")])
+        code, out, _ = self.run_main(fake, transcribe=local, url=reel)
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith(
+            "Titolo: Video by utente_finto\nAutore: utente_finto\nPiattaforma: Instagram\n"
+            f"URL: {reel}\nFonte: trascrizione locale"
+        ))
+        self.assertEqual([call[-1] for call in fake.calls], [reel, reel])
+        self.assertIsNone(local.call_args.args[2])  # no language: Whisper detects it
+
+    def test_carousel_rejected_before_any_download(self):
+        fake = FakeYtdlp({**INFO, "_type": "playlist", "entries": [{}, {}]})
+        code, out, err = self.run_main(fake)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("contiene 2 video", err)
+        self.assertEqual(len(fake.calls), 1)
+        self.assert_tmp_removed()
+
+    def test_video_without_audio_stops_before_download(self):
+        info = {**INFO, "formats": [{"acodec": "none"}, {"acodec": "none"}]}
+        fake = FakeYtdlp(info)
+        code, out, err = self.run_main(fake)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("solo il video senza audio", err)
+        self.assertIn("--cookies-from-browser", err)
+        self.assertEqual(len(fake.calls), 1)
+        self.assert_tmp_removed()
+
+    def test_video_without_audio_with_cookies_has_no_hint(self):
+        fake = FakeYtdlp({**INFO, "formats": [{"acodec": "none"}]})
+        _, _, err = self.run_main(fake, "--cookies-from-browser", "chrome")
+        self.assertEqual(err, "Errore: nessun sottotitolo e il sito fornisce solo il video senza audio\n")
+
+    def test_video_without_audio_but_subtitles_still_works(self):
+        fake = FakeYtdlp({**INFO, "subtitles": {"it": []}, "formats": [{"acodec": "none"}]})
+        code, _, _ = self.run_main(fake)
+        self.assertEqual(code, 0)
+
+    def test_no_login_by_default(self):
+        fake = FakeYtdlp({**INFO, "subtitles": {"it": []}})
+        self.run_main(fake)
+        for call in fake.calls:
+            self.assertFalse(any("cookies" in arg for arg in call))
+
+    def test_cookies_passed_to_every_call(self):
+        fake = FakeYtdlp(INFO)
+        local = mock.Mock(return_value=[(0.0, "Testo.")])
+        code, _, _ = self.run_main(fake, "--cookies-from-browser", "firefox", transcribe=local)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 2)
+        for call in fake.calls:
+            i = call.index("--cookies-from-browser")
+            self.assertEqual(call[i + 1], "firefox")
+            self.assertEqual(call[-1], URL)
 
     def test_lang_option(self):
         fake = FakeYtdlp({**INFO, "subtitles": {"it": [], "en": []}})
@@ -385,7 +528,7 @@ class TranscribeLocal(unittest.TestCase):
 
     def test_engine_error_wrapped(self):
         fake = mock.Mock()
-        fake.transcribe.side_effect = OSError("rete assente")
+        fake.transcribe.side_effect = RuntimeError("Failed to load audio: ffmpeg version 9\n  banner\nrete assente\n")
         with mock.patch.object(tr.shutil, "which", return_value="/x"), \
                 mock.patch.dict("sys.modules", {"mlx_whisper": fake}):
             with self.assertRaises(tr.TranscriptError) as ctx:

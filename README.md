@@ -1,7 +1,7 @@
 # scripts
 
 Small personal automation scripts, grouped by area. Each script is self-contained: nothing to
-build, and no dependencies to install by hand (the audio, media and YouTube scripts declare their
+build, and no dependencies to install by hand (the audio, media and video scripts declare their
 own and run with `uv run`).
 
 | Area | Folder | What is inside |
@@ -10,7 +10,7 @@ own and run with `uv run`).
 | Instagram | [`instagram/`](instagram/) | Read-only browser-console script to see who does not follow back |
 | Audio | [`audio/`](audio/) | Song tempo converted into video frames, for editing on the beat |
 | Media | [`media/`](media/) | Photos and videos sorted by kind and subject (landscape, food, people), for editing |
-| YouTube | [`youtube/`](youtube/) | Full transcript of a video as clean text, from subtitles or local speech recognition |
+| Video | [`video/`](video/) | Full transcript of an online video (YouTube, Instagram, TikTok…) as clean text, from subtitles or local speech recognition |
 
 ## Where to look
 
@@ -21,7 +21,7 @@ own and run with `uv run`).
 | Run the Instagram script | [`instagram/README.md`](instagram/README.md) |
 | Find how many frames a beat lasts | [Audio](#audio) |
 | Sort photos and videos by subject | [`media/README.md`](media/README.md) |
-| Get the transcript of a YouTube video | [`youtube/README.md`](youtube/README.md) |
+| Get the transcript of a video | [`video/README.md`](video/README.md) |
 | Check your changes or add a script | [Development](#development) |
 | Understand why the repository is shaped this way | [Decisions](#decisions) |
 | Know what is not covered yet | [Known limitations](#known-limitations) |
@@ -41,7 +41,7 @@ own and run with `uv run`).
 ├── media/
 │   ├── README.md                   # usage, result, supported files, edge cases, limitations
 │   └── sort-media.py               # photos/videos sorted by subject with a local CLIP model
-├── youtube/
+├── video/
 │   ├── README.md                   # usage, options, source choice, limitations
 │   └── transcript.py               # transcript of a video: subtitles, else local mlx-whisper
 ├── tests/
@@ -50,8 +50,8 @@ own and run with `uv run`).
 │   ├── fake-browser.js                  # fake browser and fake Instagram used by the tests
 │   ├── test_beat_frames.py              # Python tests of the audio script (no librosa needed)
 │   ├── test_sort_media.py               # Python tests of the media script (fake classifier)
-│   ├── test_transcript.py               # Python tests of the YouTube script (fake yt-dlp)
-│   └── fixtures/youtube/                # hand-written WebVTT files, invented text only
+│   ├── test_transcript.py               # Python tests of the video script (fake yt-dlp)
+│   └── fixtures/video/                  # hand-written WebVTT files, invented text only
 ├── check.sh                        # lint, syntax check and tests (also run by CI)
 └── .github/                        # CI workflow and Dependabot
 ```
@@ -121,18 +121,19 @@ uv run media/sort-media.py ~/Desktop/viaggio --out ~/Desktop/ordinati --dry-run
 Options, result layout, supported formats, edge cases and limitations are in
 [`media/README.md`](media/README.md).
 
-## YouTube
+## Video
 
-`transcript.py` prints the full transcript of one video as readable paragraphs, headed by
-title, channel, URL and the source used. It reads manual subtitles, then automatic captions,
-with yt-dlp (no video download); when a video has none it downloads only the audio and
-transcribes it locally with mlx-whisper on Apple Silicon.
+`transcript.py` prints the full transcript of one online video as readable paragraphs, headed
+by title, author, platform, URL and the source used. It works on any site yt-dlp supports. It
+reads manual subtitles, then automatic captions (no video download); when a video has none it
+downloads only the audio and transcribes it locally with mlx-whisper on Apple Silicon. No
+login is used unless `--cookies-from-browser` is given, which most social sites require.
 
 ```bash
-uv run youtube/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
+uv run video/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
 ```
 
-Options, source choice and limitations are in [`youtube/README.md`](youtube/README.md).
+Options, source choice and limitations are in [`video/README.md`](video/README.md).
 
 ## Development
 
@@ -147,7 +148,7 @@ Runs `shellcheck` on every tracked `*.sh`, `node --check` on every tracked `*.js
 runs the same command on every push to `development` and on Dependabot's pull requests.
 
 Requirements: `bash`, `shellcheck`, `node`, `python3`; `uv` only to run the audio, media and
-YouTube scripts, `yt-dlp` for the YouTube script, `ffmpeg` for the media script's video tests
+video scripts, `yt-dlp` for the video script, `ffmpeg` for the media script's video tests
 (skipped without it).
 
 Changes are made on a branch, checked with `./check.sh` and merged locally into `development`,
@@ -202,9 +203,9 @@ Adding a script:
 - `sort-media.py` puts each file in one category only, and its tests use a fake classifier:
   the real model's accuracy is checked by hand on real photos (see
   [`media/README.md`](media/README.md#limitations)).
-- `transcript.py` is tested with a fake yt-dlp and fake transcription engine: YouTube's real
+- `transcript.py` is tested with a fake yt-dlp and fake transcription engine: the sites' real
   responses and mlx-whisper are checked by hand (see
-  [`youtube/README.md`](youtube/README.md#known-limitations)).
+  [`video/README.md`](video/README.md#known-limitations)).
 - `beat-frames.py` assumes a constant tempo: songs that speed up or change tempo get a single
   average value. The half-time correction is a threshold, not a detection, so a genuinely slow
   song needs `--min-bpm 0`. The tests cover the arithmetic only; librosa's detection is checked
