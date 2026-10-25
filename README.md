@@ -8,7 +8,7 @@ own and run with `uv run`).
 |---|---|---|
 | Shell utilities | [`sh/`](sh/) | Bash helpers for the local filesystem |
 | Instagram | [`instagram/`](instagram/) | Read-only browser-console script to see who does not follow back |
-| Audio | [`audio/`](audio/) | Song tempo converted into video frames, for editing on the beat |
+| Audio | [`audio/`](audio/) | Song tempo converted into video frames; songs split into stems and the guitar into MIDI |
 | Media | [`media/`](media/) | Photos and videos sorted by kind and subject (landscape, food, people), for editing |
 | Video | [`video/`](video/) | Full transcript of an online video (YouTube, Instagram, TikTok…) as clean text, from subtitles or local speech recognition |
 
@@ -20,6 +20,7 @@ own and run with `uv run`).
 | Run the shell helper | [Shell utilities](#shell-utilities) |
 | Run the Instagram script | [`instagram/README.md`](instagram/README.md) |
 | Find how many frames a beat lasts | [Audio](#audio) |
+| Split songs into stems, guitar into MIDI | [`audio/README.md`](audio/README.md) |
 | Sort photos and videos by subject | [`media/README.md`](media/README.md) |
 | Get the transcript of a video | [`video/README.md`](video/README.md) |
 | Check your changes or add a script | [Development](#development) |
@@ -37,7 +38,9 @@ own and run with `uv run`).
 │   ├── README.md                   # usage, commands, how to read the results
 │   └── ig-who-unfollowed.js        # read-only scan, snapshots and diff between scans
 ├── audio/
-│   └── beat-frames.py              # BPM of a song and beats converted into video frames
+│   ├── README.md                   # split-stems: usage, output, mixed guitars, limitations
+│   ├── beat-frames.py              # BPM of a song and beats converted into video frames
+│   └── split-stems.py              # songs split into stems with Demucs, guitar into MIDI
 ├── media/
 │   ├── README.md                   # usage, result, supported files, edge cases, limitations
 │   └── sort-media.py               # photos/videos sorted by subject with a local CLIP model
@@ -49,6 +52,7 @@ own and run with `uv run`).
 │   ├── ig-who-unfollowed.test.js        # Node tests of the Instagram script
 │   ├── fake-browser.js                  # fake browser and fake Instagram used by the tests
 │   ├── test_beat_frames.py              # Python tests of the audio script (no librosa needed)
+│   ├── test_split_stems.py              # Python tests of the stems script (fake Demucs and Basic Pitch)
 │   ├── test_sort_media.py               # Python tests of the media script (fake classifier)
 │   ├── test_transcript.py               # Python tests of the video script (fake yt-dlp)
 │   └── fixtures/video/                  # hand-written WebVTT files, invented text only
@@ -106,6 +110,21 @@ as about 117.5): check the suggested frame counts against the timeline.
 | `0` | Analysis completed |
 | `1` | File not found, or no tempo detected (e.g. silence) |
 | `2` | Wrong arguments |
+
+### `audio/split-stems.py`
+
+Splits every song of a folder into six stems with [Demucs](https://github.com/adefossez/demucs)
+(vocals, drums, bass, guitar, piano, other) on the Mac GPU, converts the guitar into MIDI with
+[Basic Pitch](https://github.com/spotify/basic-pitch) to read its notes on a piano roll, and
+splits the guitar stem into its left and right channels, where two guitars panned apart can be
+heard one at a time. Songs already done are skipped.
+
+```bash
+uv run audio/split-stems.py ~/Music/da-studiare
+```
+
+Output, options, what to do when the guitars are mixed together, and limitations are in
+[`audio/README.md`](audio/README.md).
 
 ## Media
 
@@ -175,7 +194,8 @@ Adding a script:
   profiles the script opens.
 - **Own code only.** The third-party console tool these scripts replaced is not in the
   repository.
-- **Python dependencies declared inside the script.** `beat-frames.py` needs librosa and
+- **Python dependencies declared inside the script.** `beat-frames.py` needs librosa,
+  `split-stems.py` Demucs and Basic Pitch, and
   `sort-media.py` needs PyTorch and OpenCLIP: the inline metadata block (PEP 723) lets `uv run`
   install them on demand, so the repository still has no setup step. The logic lives in plain
   functions and the heavy libraries are imported only where the audio or the images are read,
