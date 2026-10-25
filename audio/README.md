@@ -4,10 +4,11 @@
 
 ## `split-stems.py`
 
-Splits every song of a folder into stems and turns the guitar into MIDI notes, to study a part
+Splits one song, or every song of a folder, into stems and turns the guitar into MIDI notes, to study a part
 that is hard to hear in the full mix. Everything runs locally; messages are in Italian.
 
 ```bash
+uv run audio/split-stems.py ~/Desktop/brano.mp3                  # one song: output in ~/Desktop/stems
 uv run audio/split-stems.py ~/Music/da-studiare                  # output in ~/Music/da-studiare/stems
 uv run audio/split-stems.py ~/Music/da-studiare ~/Desktop/stems  # another output folder
 uv run audio/split-stems.py cartella --shifts 1                  # twice as fast, a little less clean
@@ -20,8 +21,10 @@ in a cached environment and downloads the Demucs model; nothing is installed in 
 
 ### What it does
 
-1. Takes every `.wav`, `.mp3`, `.flac` and `.m4a` directly inside the folder (not in
-   subfolders). Two files with the same name and different extensions would overwrite each
+1. Takes the song given, or every `.wav`, `.mp3`, `.flac` and `.m4a` directly inside the
+   folder given (not in subfolders). Quote paths with spaces or accents:
+   `"~/Music/34_Artista - Titolo (Video).mp3"` does not expand `~`, use `$HOME/...` or no quotes
+   around `~/`. Two files with the same name and different extensions would overwrite each
    other's stems, so the second one is skipped with a message.
 2. Splits each song with Demucs `htdemucs_6s`, the model with a dedicated guitar stem, on the
    Mac GPU (`mps`); if that fails it retries on the CPU.
@@ -45,8 +48,8 @@ MIDI or channel file is recreated, and a new `--midi` stem is added without spli
 
 | Option | Default | Effect |
 |---|---|---|
-| `input` | — | Folder with the songs |
-| `output` | `<input>/stems` | Output folder |
+| `input` | — | One song, or a folder with songs |
+| `output` | `stems/` next to the song, or inside the folder | Output folder |
 | `--shifts N` | `2` | Demucs passes over shifted copies of the song: 2 is cleaner than 1 but takes twice as long |
 | `--device auto\|mps\|cpu` | `auto` | `auto` tries the GPU, then the CPU |
 | `--midi STEMS` | `guitar` | Stems to convert into MIDI, comma separated (`guitar,other`); empty for none |
@@ -56,7 +59,7 @@ MIDI or channel file is recreated, and a new `--midi` stem is added without spli
 |---|---|
 | `0` | Every song done (or nothing to do) |
 | `1` | At least one song, channel split or MIDI failed: the others are still done, the errors are listed at the end |
-| `2` | Wrong arguments or input folder not found |
+| `2` | Wrong arguments, input not found, or a file that is not `.wav`, `.mp3`, `.flac`, `.m4a` |
 | `3` | `ffmpeg` not found |
 
 ### When the guitars are mixed together
@@ -86,7 +89,10 @@ two similar guitars reliably, so the script offers what works in practice, in th
 - Basic Pitch writes one MIDI track for everything it hears: chords and two guitars playing
   together come out as overlapping notes, and fast passages or heavy distortion give extra or
   missing notes. Read the MIDI as a guide, not a score.
-- Tested live on synthetic tones only (2026-10-25), not yet on a real recording: a 3-minute
-  file took about 20 seconds in all with `--shifts 2` on the GPU (separation, channels and
-  MIDI); the time depends on the length, not on the content.
+- Time and space, measured on 2026-10-25 on a real 4-minute pop song (GPU, `--shifts 2`):
+  about 30 seconds in all (separation alone about 19 s), and about 330 MB of files: six 44 MB
+  stems (16-bit WAV), three 22 MB mono channel files and the MIDI files. Delete the stems you
+  do not need.
+- On that song the guitar was in the middle (left and right at the same level, side 9 dB
+  lower): the channels only help when the guitars are panned apart.
 - The tests use a fake runner instead of Demucs, ffmpeg and Basic Pitch.

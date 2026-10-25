@@ -11,13 +11,14 @@
 """Split every song of a folder into stems, and the guitar into MIDI notes, to study a part.
 
 Usage:
-    uv run audio/split-stems.py <input-folder> [output-folder] [--shifts 2] [--device auto]
+    uv run audio/split-stems.py <song-or-folder> [output-folder] [--shifts 2] [--device auto]
         [--midi guitar,other] [--no-channels]
 
-Every .wav, .mp3, .flac and .m4a directly inside the input folder (not in subfolders) is split
+The input is one song, or a folder: then every .wav, .mp3, .flac and .m4a directly inside it
+(not in subfolders) is split
 with Demucs (model htdemucs_6s: vocals, drums, bass, guitar, piano, other) on the Mac GPU,
 falling back to the CPU. Songs already split are skipped. The output folder defaults to
-<input-folder>/stems:
+stems/ next to the song, or inside the folder:
 
     stems/htdemucs_6s/<song>/{vocals,drums,bass,guitar,piano,other}.wav
     stems/htdemucs_6s/<song>/guitar_{left,right,side}.wav   two guitars panned apart
@@ -84,6 +85,22 @@ def find_songs(folder):
     return songs, duplicates
 
 
+def resolve_input(path):
+    """Return (songs, duplicates, default output folder) for a song file or a folder.
+
+    Raises ValueError with an Italian message when the path cannot be used.
+    """
+    path = Path(path).expanduser()
+    if path.is_dir():
+        songs, duplicates = find_songs(path)
+        return songs, duplicates, path / "stems"
+    if path.is_file():
+        if path.suffix.lower() not in AUDIO_EXT:
+            raise ValueError(f"formato non supportato: {path.name} (validi: .wav, .mp3, .flac, .m4a)")
+        return [Song(path, path.stem)], [], path.parent / "stems"
+    raise ValueError(f"file o cartella non trovati: {path}")
+
+
 def stem_dir(out, song):
     return Path(out) / MODEL / song.name
 
@@ -103,7 +120,7 @@ def missing_midi(out, song, stems):
 def demucs_command(python, song, out, device, shifts):
     command = [python, "-m", "demucs", "-n", MODEL, "-d", device, "--shifts", str(shifts)]
     if device == "mps":
-        command += ["--overlap", "0.25", "--float32"]
+        command += ["--overlap", "0.25"]
     return command + ["-o", str(out), str(song.path)]
 
 
@@ -201,15 +218,16 @@ def parse_args(argv):
         description="Separa in stem le canzoni di una cartella e trascrive la chitarra in MIDI.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""esempi:
+  uv run audio/split-stems.py ~/Desktop/brano.mp3              # un brano: stem in ~/Desktop/stems
   uv run audio/split-stems.py ~/Music/da-studiare
   uv run audio/split-stems.py ~/Music/da-studiare ~/Desktop/stems --shifts 1
   uv run audio/split-stems.py cartella --midi guitar,other    # se la chitarra finisce in other
   uv run audio/split-stems.py cartella --no-channels
 
-exit code: 0 ok, 1 almeno un brano non riuscito, 2 argomenti o cartella non validi,
+exit code: 0 ok, 1 almeno un brano non riuscito, 2 argomenti, file o cartella non validi,
 3 ffmpeg assente.""",
     )
-    parser.add_argument("input", help="cartella con i brani (.wav, .mp3, .flac, .m4a)")
+    parser.add_argument("input", help="un brano, o una cartella di brani (.wav, .mp3, .flac, .m4a)")
     parser.add_argument("output", nargs="?", help="cartella di output (default: <input>/stems)")
     parser.add_argument(
         "--shifts", type=int, default=DEFAULT_SHIFTS,
@@ -241,19 +259,19 @@ exit code: 0 ok, 1 almeno un brano non riuscito, 2 argomenti o cartella non vali
 
 def main(argv=None, runner=run):
     args = parse_args(argv)
-    folder = Path(args.input).expanduser()
-    if not folder.is_dir():
-        print(f"Errore: cartella non trovata: {folder}", file=sys.stderr)
+    try:
+        songs, duplicates, default_out = resolve_input(args.input)
+    except ValueError as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
         return EXIT_USAGE
     if shutil.which("ffmpeg") is None:
         print("Errore: ffmpeg non trovato: installalo con brew install ffmpeg", file=sys.stderr)
         return EXIT_NO_FFMPEG
-    out = Path(args.output).expanduser() if args.output else folder / "stems"
-    songs, duplicates = find_songs(folder)
+    out = Path(args.output).expanduser() if args.output else default_out
     for path in duplicates:
         print(f"Salto {path.name}: c'è già un brano con lo stesso nome", file=sys.stderr)
     if not songs:
-        print(f"Nessun brano (.wav, .mp3, .flac, .m4a) in {folder}", file=sys.stderr)
+        print(f"Nessun brano (.wav, .mp3, .flac, .m4a) in {args.input}", file=sys.stderr)
         return EXIT_OK
     problems = []
     for song in songs:

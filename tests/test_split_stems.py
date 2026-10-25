@@ -91,7 +91,7 @@ class Commands(unittest.TestCase):
         command = ss.demucs_command("py", song("a b"), pathlib.Path("/out"), "mps", 2)
         self.assertEqual(command, [
             "py", "-m", "demucs", "-n", "htdemucs_6s", "-d", "mps", "--shifts", "2",
-            "--overlap", "0.25", "--float32", "-o", "/out", "/in/a b.mp3",
+            "--overlap", "0.25", "-o", "/out", "/in/a b.mp3",
         ])
 
     def test_demucs_on_cpu_keeps_shifts(self):
@@ -249,12 +249,38 @@ class Main(unittest.TestCase):
         self.assertEqual((code, runner.calls), (0, []))
         self.assertIn("Nessun brano", err)
 
-    def test_missing_folder(self):
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            code = ss.main([str(self.folder / "manca")], runner=FakeRunner())
-        self.assertEqual(code, ss.EXIT_USAGE)
-        self.assertIn("cartella non trovata", err.getvalue())
+    def main_with(self, path):
+        out, err = io.StringIO(), io.StringIO()
+        runner = FakeRunner()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = ss.main([str(path), "--midi", "", "--no-channels"], runner=runner)
+        return code, err.getvalue(), runner
+
+    def test_missing_path(self):
+        code, err, runner = self.main_with(self.folder / "manca.mp3")
+        self.assertEqual((code, runner.calls), (ss.EXIT_USAGE, []))
+        self.assertIn("file o cartella non trovati", err)
+
+    def test_single_song_with_accent_and_spaces(self):
+        song_file = self.folder / "34_Brano finto -  MARILÙ (Video).mp3"
+        song_file.write_bytes(b"x")
+        code, err, runner = self.main_with(song_file)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(len(runner.calls), 1)  # only that song, not the whole folder
+        self.assertTrue((self.out / "htdemucs_6s" / song_file.stem / "guitar.wav").is_file())
+
+    def test_single_song_unsupported_format(self):
+        text = self.folder / "note.txt"
+        text.write_bytes(b"x")
+        code, err, runner = self.main_with(text)
+        self.assertEqual((code, runner.calls), (ss.EXIT_USAGE, []))
+        self.assertIn("formato non supportato: note.txt", err)
+
+    def test_single_song_uppercase_extension(self):
+        song_file = self.folder / "Tre.FLAC"
+        song_file.write_bytes(b"x")
+        code, _, runner = self.main_with(song_file)
+        self.assertEqual((code, len(runner.calls)), (0, 1))
 
     def test_missing_ffmpeg(self):
         with mock.patch.object(ss.shutil, "which", return_value=None):

@@ -113,14 +113,14 @@ as about 117.5): check the suggested frame counts against the timeline.
 
 ### `audio/split-stems.py`
 
-Splits every song of a folder into six stems with [Demucs](https://github.com/adefossez/demucs)
+Splits one song, or every song of a folder, into six stems with [Demucs](https://github.com/adefossez/demucs)
 (vocals, drums, bass, guitar, piano, other) on the Mac GPU, converts the guitar into MIDI with
 [Basic Pitch](https://github.com/spotify/basic-pitch) to read its notes on a piano roll, and
 splits the guitar stem into its left and right channels, where two guitars panned apart can be
 heard one at a time. Songs already done are skipped.
 
 ```bash
-uv run audio/split-stems.py ~/Music/da-studiare
+uv run audio/split-stems.py ~/Desktop/brano.mp3     # or a folder of songs
 ```
 
 Output, options, what to do when the guitars are mixed together, and limitations are in
