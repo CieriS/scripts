@@ -75,10 +75,14 @@ two similar guitars reliably, so the script offers what works in practice, in th
    guitar to the other. `guitar_left.wav` and `guitar_right.wav` then hold one guitar each;
    `guitar_side.wav` (left minus right) removes whatever sits in the middle (often vocals, bass
    and a centered lead) and keeps what is panned apart. When a guitar is centered, the channels
-   do not help, and the script does not write them: when side is more than 6 dB below the
-   louder channel, left and right are near copies of `guitar.wav`. They are not written either
+   do not help, and the script does not write them: when the two sides are within 6 dB of each
+   other and side is more than 6 dB below the louder channel, left and right are near copies
+   of `guitar.wav`. A guitar panned all the way to one side (one channel at least 6 dB louder
+   than the other) always gets its channel files. They are not written either
    when the guitar stem is practically empty (below -60 dB): then listen to `other.wav`.
-   `guitar_channels.txt` says which case it was. To measure again, delete that file.
+   `guitar_channels.txt` says which case it was and with which threshold: a song measured with
+   another threshold is measured again on the next run, and so is one whose measure failed
+   (reported as an error). To force a new measure, delete that file.
 2. **Check `other`.** When the guitar sounds thin or comes and goes in `guitar.wav`, the rest
    is in `other.wav`: run again with `--midi guitar,other` and read both MIDI files.
 3. **Trust the notes in the guitar range.** The MIDI keeps only 75–1400 Hz, which drops most of
@@ -90,6 +94,8 @@ two similar guitars reliably, so the script offers what works in practice, in th
 
 ### Limitations
 
+- The CPU fallback runs after any Demucs failure, not only a GPU problem: a corrupted file is
+  tried again on the CPU, slowly, before being reported.
 - The separation is approximate: expect some bleed between stems, more with distorted or
   layered guitars. The `piano` stem of `htdemucs_6s` is the weakest of the six.
 - Basic Pitch writes one MIDI track for everything it hears: chords and two guitars playing

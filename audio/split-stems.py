@@ -29,8 +29,9 @@ stems/ next to the song, or inside the folder:
 The guitar stem is also split into its left and right channels and into "side" (left minus
 right): rock records often pan two guitars to opposite sides, so one channel can hold one
 guitar alone. When the guitar is in the middle the two channels are near copies, so they are
-written only when side is no more than 6 dB below the louder channel. MIDI notes are limited to the guitar range (about 75-1400 Hz) to drop most of
-a synth or a voice that leaked in. Output messages are in Italian.
+written only when one side is at least 6 dB louder than the other, or when side is no more
+than 6 dB below the louder channel. MIDI notes are limited to the guitar range (about
+75-1400 Hz) to drop most of a synth or a voice that leaked in. Output messages are in Italian.
 """
 
 import argparse
@@ -122,9 +123,17 @@ def channels_report(out, song):
     return stem_dir(out, song) / CHANNELS_REPORT
 
 
+def threshold_line():
+    return f"Soglia: {SIDE_GAP_DB:g} dB"
+
+
 def channels_done(out, song):
-    """The report is written last, after the channel files (if any): it marks the step as done."""
-    return channels_report(out, song).is_file()
+    """The report is written last, after the channel files (if any): it marks the step as done.
+
+    A report written with another threshold does not count, so the song is measured again.
+    """
+    report = channels_report(out, song)
+    return report.is_file() and threshold_line() in report.read_text(encoding="utf-8").splitlines()
 
 
 def parse_mean_volume(ffmpeg_output):
@@ -143,7 +152,13 @@ def channels_differ(levels):
         return False
     if is_silent(levels):
         return False
+    if is_unbalanced(levels):
+        return True  # a guitar panned to one side: that channel holds it alone
     return levels["side"] >= max(levels["left"], levels["right"]) - SIDE_GAP_DB
+
+
+def is_unbalanced(levels):
+    return abs(levels["left"] - levels["right"]) >= SIDE_GAP_DB
 
 
 def is_silent(levels):
@@ -155,7 +170,9 @@ def format_report(levels, differ):
     shown = ", ".join(
         f"{name} {'?' if levels.get(name) is None else f'{levels[name]:.1f} dB'}" for name in CHANNELS
     )
-    if differ:
+    if differ and is_unbalanced(levels):
+        verdict = "un lato più forte dell'altro: scritti guitar_left/right/side.wav"
+    elif differ:
         verdict = "sinistro e destro diversi: scritti guitar_left/right/side.wav"
     elif is_silent(levels):
         verdict = "stem della chitarra quasi vuoto: canali non scritti (ascolta other.wav)"
@@ -164,7 +181,7 @@ def format_report(levels, differ):
             f"sinistro e destro quasi uguali (side più basso di oltre {SIDE_GAP_DB:.0f} dB): "
             "chitarra al centro, canali non scritti"
         )
-    return f"Livelli medi: {shown}\n{verdict}\n"
+    return f"Livelli medi: {shown}\n{verdict}\n{threshold_line()}\n"
 
 
 def missing_midi(out, song, stems):
@@ -240,6 +257,8 @@ def split_channels(song, out, runner, meter):
     """Write the channel files only when left and right differ; always write the report."""
     guitar = stem_dir(out, song) / "guitar.wav"
     levels = {name: meter(level_command(guitar, pan)) for name, pan in CHANNELS.items()}
+    if any(level is None for level in levels.values()):
+        return False  # measure failed: reported by process(), retried on the next run
     differ = channels_differ(levels)
     if differ and not all(runner(c) for c in channel_commands(guitar)):
         return False

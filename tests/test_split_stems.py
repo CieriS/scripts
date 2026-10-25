@@ -53,6 +53,8 @@ class FakeRunner:
 
 
 PANNED = {"left": -20.0, "right": -21.0, "side": -23.0}
+# one guitar hard left: side = 0.5 * left, exactly 6.02 dB below it
+ONE_SIDE = {"left": -20.0, "right": float("-inf"), "side": -26.02}
 CENTERED = {"left": -20.4, "right": -20.5, "side": -29.5}  # measured on a real pop song
 
 
@@ -155,9 +157,20 @@ class ChannelLevels(unittest.TestCase):
     def test_panned_guitars(self):
         self.assertTrue(ss.channels_differ(PANNED))
 
+    def test_one_side_only(self):
+        self.assertTrue(ss.channels_differ(ONE_SIDE))
+        self.assertTrue(ss.channels_differ({"left": -40.0, "right": -20.0, "side": -26.5}))
+
+    def test_slightly_unbalanced_centered_guitar(self):
+        self.assertFalse(ss.channels_differ({"left": -20.0, "right": -24.0, "side": -32.0}))
+
+    def test_report_records_threshold(self):
+        self.assertTrue(ss.format_report(CENTERED, False).endswith("Soglia: 6 dB\n"))
+
     def test_threshold_edge(self):
         self.assertTrue(ss.channels_differ({"left": -20.0, "right": -25.0, "side": -26.0}))
         self.assertFalse(ss.channels_differ({"left": -20.0, "right": -25.0, "side": -26.1}))
+        self.assertTrue(ss.channels_differ({"left": -20.0, "right": -26.0, "side": -40.0}))
 
     def test_missing_or_silent(self):
         self.assertFalse(ss.channels_differ({"left": -20.0, "right": None, "side": -21.0}))
@@ -312,12 +325,33 @@ class Main(unittest.TestCase):
         self.run_main("--midi", "", meter=FakeMeter(CENTERED))
         self.assertEqual(list(folder.glob("guitar_*.wav")), [])
 
-    def test_unmeasurable_levels_write_nothing(self):
-        code, _, _, runner = self.run_main("--midi", "", meter=FakeMeter({}))
-        self.assertEqual(code, 0)
+    def test_failed_measure_is_an_error_and_retried(self):
+        code, _, err, runner = self.run_main("--midi", "", meter=FakeMeter({"left": -20.0, "right": -20.0}))
+        self.assertEqual(code, 1)
+        self.assertIn("Uno: canali della chitarra non creati", err)
         self.assertNotIn("ffmpeg", runner.kinds())
+        report = self.out / "htdemucs_6s" / "Uno" / "guitar_channels.txt"
+        self.assertFalse(report.exists())
+        code, _, _, runner = self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        self.assertEqual((code, runner.calls), (0, []))  # stems kept, only measured again
+        self.assertTrue(report.is_file())
+
+    def test_guitar_panned_to_one_side(self):
+        self.run_main("--midi", "", meter=FakeMeter(ONE_SIDE))
+        folder = self.out / "htdemucs_6s" / "Uno"
+        self.assertEqual(len(list(folder.glob("guitar_*.wav"))), 3)
+        self.assertIn("un lato più forte", (folder / "guitar_channels.txt").read_text(encoding="utf-8"))
+
+    def test_report_from_another_threshold_is_measured_again(self):
+        self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        with mock.patch.object(ss, "SIDE_GAP_DB", 10.0):
+            _, _, _, runner = self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        self.assertEqual(len(self.meter.calls), 6)  # measured again, stems not split again
+        self.assertNotIn("demucs:mps", runner.kinds())
+        # side 9.1 dB below: centered with 6 dB, different with 10 dB
+        self.assertEqual(runner.kinds(), ["ffmpeg"] * 6)
         report = (self.out / "htdemucs_6s" / "Uno" / "guitar_channels.txt").read_text(encoding="utf-8")
-        self.assertIn("left ?, right ?, side ?", report)
+        self.assertIn("Soglia: 10 dB", report)
 
     def test_no_channels(self):
         _, _, _, runner = self.run_main("--no-channels")
