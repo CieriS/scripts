@@ -28,7 +28,9 @@ in a cached environment and downloads the Demucs model; nothing is installed in 
    other's stems, so the second one is skipped with a message.
 2. Splits each song with Demucs `htdemucs_6s`, the model with a dedicated guitar stem, on the
    Mac GPU (`mps`); if that fails it retries on the CPU.
-3. Splits the guitar stem into left, right and side channels (see below).
+3. Measures the left, right and side levels of the guitar stem and writes the three channel
+   files only when left and right really differ (see below); `guitar_channels.txt` keeps the
+   levels and the verdict.
 4. Converts the guitar stem into MIDI with Basic Pitch, keeping only notes in the guitar range
    (75–1400 Hz). Open the `.mid` file in GarageBand or Logic to see the notes on the piano roll.
 
@@ -39,7 +41,8 @@ MIDI or channel file is recreated, and a new `--midi` stem is added without spli
 <output>/
 ├── htdemucs_6s/<song>/
 │   ├── vocals.wav  drums.wav  bass.wav  guitar.wav  piano.wav  other.wav
-│   └── guitar_left.wav  guitar_right.wav  guitar_side.wav
+│   ├── guitar_channels.txt                          levels and verdict
+│   └── guitar_left.wav  guitar_right.wav  guitar_side.wav   only when left and right differ
 └── midi/
     └── <song>_guitar.mid      (and <song>_<stem>.mid for every --midi stem)
 ```
@@ -53,7 +56,7 @@ MIDI or channel file is recreated, and a new `--midi` stem is added without spli
 | `--shifts N` | `2` | Demucs passes over shifted copies of the song: 2 is cleaner than 1 but takes twice as long |
 | `--device auto\|mps\|cpu` | `auto` | `auto` tries the GPU, then the CPU |
 | `--midi STEMS` | `guitar` | Stems to convert into MIDI, comma separated (`guitar,other`); empty for none |
-| `--no-channels` | off | Do not write `guitar_left/right/side.wav` |
+| `--no-channels` | off | Skip the channel step: no levels measured, no channel files |
 
 | Exit code | Meaning |
 |---|---|
@@ -72,7 +75,10 @@ two similar guitars reliably, so the script offers what works in practice, in th
    guitar to the other. `guitar_left.wav` and `guitar_right.wav` then hold one guitar each;
    `guitar_side.wav` (left minus right) removes whatever sits in the middle (often vocals, bass
    and a centered lead) and keeps what is panned apart. When a guitar is centered, the channels
-   do not help.
+   do not help, and the script does not write them: when side is more than 6 dB below the
+   louder channel, left and right are near copies of `guitar.wav`. They are not written either
+   when the guitar stem is practically empty (below -60 dB): then listen to `other.wav`.
+   `guitar_channels.txt` says which case it was. To measure again, delete that file.
 2. **Check `other`.** When the guitar sounds thin or comes and goes in `guitar.wav`, the rest
    is in `other.wav`: run again with `--midi guitar,other` and read both MIDI files.
 3. **Trust the notes in the guitar range.** The MIDI keeps only 75–1400 Hz, which drops most of
@@ -91,8 +97,9 @@ two similar guitars reliably, so the script offers what works in practice, in th
   missing notes. Read the MIDI as a guide, not a score.
 - Time and space, measured on 2026-10-25 on a real 4-minute pop song (GPU, `--shifts 2`):
   about 30 seconds in all (separation alone about 19 s), and about 330 MB of files: six 44 MB
-  stems (16-bit WAV), three 22 MB mono channel files and the MIDI files. Delete the stems you
+  stems (16-bit WAV), the MIDI files, and three 22 MB mono channel files when written. Delete the stems you
   do not need.
-- On that song the guitar was in the middle (left and right at the same level, side 9 dB
-  lower): the channels only help when the guitars are panned apart.
+- On that song the guitar was in the middle (left -20.4 dB, right -20.5 dB, side -29.5 dB):
+  no channel files were written. The 6 dB threshold is a rule of thumb checked on that song
+  and on synthetic tones panned apart, not on a large set of recordings.
 - The tests use a fake runner instead of Demucs, ffmpeg and Basic Pitch.

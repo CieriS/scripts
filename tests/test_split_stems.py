@@ -52,6 +52,24 @@ class FakeRunner:
         return [kind(c) for c in self.calls]
 
 
+PANNED = {"left": -20.0, "right": -21.0, "side": -23.0}
+CENTERED = {"left": -20.4, "right": -20.5, "side": -29.5}  # measured on a real pop song
+
+
+class FakeMeter:
+    """Stands in for the ffmpeg level measure: returns the level of the channel asked."""
+
+    def __init__(self, levels):
+        self.levels = levels
+        self.calls = []
+
+    def __call__(self, command):
+        self.calls.append(command)
+        pan = command[command.index("-af") + 1].split(",")[0]
+        name = next(n for n, p in ss.CHANNELS.items() if p == pan)
+        return self.levels.get(name)
+
+
 def device_fails(device):
     return lambda c: "demucs" in c and c[c.index("-d") + 1] == device
 
@@ -124,6 +142,42 @@ class Commands(unittest.TestCase):
         )
 
 
+class ChannelLevels(unittest.TestCase):
+    def test_parse_mean_volume(self):
+        text = "[Parsed_volumedetect_1 @ 0x1] n_samples: 10\n[Parsed_volumedetect_1 @ 0x1] mean_volume: -20.4 dB\n"
+        self.assertEqual(ss.parse_mean_volume(text), -20.4)
+        self.assertEqual(ss.parse_mean_volume("mean_volume: -inf dB"), float("-inf"))
+        self.assertIsNone(ss.parse_mean_volume("Invalid data found"))
+
+    def test_centered_guitar(self):
+        self.assertFalse(ss.channels_differ(CENTERED))
+
+    def test_panned_guitars(self):
+        self.assertTrue(ss.channels_differ(PANNED))
+
+    def test_threshold_edge(self):
+        self.assertTrue(ss.channels_differ({"left": -20.0, "right": -25.0, "side": -26.0}))
+        self.assertFalse(ss.channels_differ({"left": -20.0, "right": -25.0, "side": -26.1}))
+
+    def test_missing_or_silent(self):
+        self.assertFalse(ss.channels_differ({"left": -20.0, "right": None, "side": -21.0}))
+        inf = float("-inf")
+        self.assertFalse(ss.channels_differ({"left": inf, "right": inf, "side": inf}))
+
+    def test_nearly_empty_stem(self):
+        levels = {"left": -91.0, "right": -91.0, "side": -91.0}  # seen live on synthetic tones
+        self.assertFalse(ss.channels_differ(levels))
+        self.assertIn("quasi vuoto", ss.format_report(levels, False))
+        self.assertTrue(ss.channels_differ({"left": -59.0, "right": -70.0, "side": -60.0}))
+
+    def test_mono_source_gives_silent_side(self):
+        self.assertFalse(ss.channels_differ({"left": -20.0, "right": -20.0, "side": float("-inf")}))
+
+    def test_level_command(self):
+        command = ss.level_command(pathlib.Path("/s/guitar.wav"), "pan=mono|c0=c1")
+        self.assertEqual(command[-5:], ["-af", "pan=mono|c0=c1,volumedetect", "-f", "null", "-"])
+
+
 class ParseArgs(unittest.TestCase):
     def test_defaults(self):
         args = ss.parse_args(["in"])
@@ -152,11 +206,12 @@ class Main(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.out = self.folder / "stems"
 
-    def run_main(self, *args, runner=None):
+    def run_main(self, *args, runner=None, meter=None):
         runner = runner or FakeRunner()
+        self.meter = meter or FakeMeter(PANNED)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = ss.main([str(self.folder), *args], runner=runner)
+            code = ss.main([str(self.folder), *args], runner=runner, meter=self.meter)
         return code, out.getvalue(), err.getvalue(), runner
 
     def test_full_run(self):
@@ -225,6 +280,44 @@ class Main(unittest.TestCase):
         code, _, err, _ = self.run_main("--midi", "", runner=FakeRunner([fail_ffmpeg]))
         self.assertEqual(code, 1)
         self.assertIn("Uno: canali della chitarra non creati", err)
+
+    def test_centered_guitar_writes_no_channel_files(self):
+        code, out, _, runner = self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        self.assertEqual(code, 0)
+        self.assertNotIn("ffmpeg", runner.kinds())
+        folder = self.out / "htdemucs_6s" / "Uno"
+        self.assertEqual(sorted(p.name for p in folder.glob("guitar_*.wav")), [])
+        report = (folder / "guitar_channels.txt").read_text(encoding="utf-8")
+        self.assertIn("left -20.4 dB, right -20.5 dB, side -29.5 dB", report)
+        self.assertIn("canali non scritti", report)
+        self.assertIn("chitarra al centro", out)
+
+    def test_panned_guitar_writes_channels_and_report(self):
+        self.run_main("--midi", "")
+        folder = self.out / "htdemucs_6s" / "Uno"
+        self.assertEqual(len(list(folder.glob("guitar_*.wav"))), 3)
+        self.assertIn("scritti guitar_left/right/side.wav", (folder / "guitar_channels.txt").read_text(encoding="utf-8"))
+        self.assertEqual(len(self.meter.calls), 6)  # three levels per song
+
+    def test_centered_song_is_not_measured_again(self):
+        self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        code, out, _, runner = self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        self.assertEqual((code, runner.calls, self.meter.calls), (0, [], []))
+        self.assertEqual(out.count("già fatto"), 2)
+
+    def test_stale_channel_files_removed_when_centered(self):
+        self.run_main("--midi", "")
+        folder = self.out / "htdemucs_6s" / "Uno"
+        (folder / "guitar_channels.txt").unlink()
+        self.run_main("--midi", "", meter=FakeMeter(CENTERED))
+        self.assertEqual(list(folder.glob("guitar_*.wav")), [])
+
+    def test_unmeasurable_levels_write_nothing(self):
+        code, _, _, runner = self.run_main("--midi", "", meter=FakeMeter({}))
+        self.assertEqual(code, 0)
+        self.assertNotIn("ffmpeg", runner.kinds())
+        report = (self.out / "htdemucs_6s" / "Uno" / "guitar_channels.txt").read_text(encoding="utf-8")
+        self.assertIn("left ?, right ?, side ?", report)
 
     def test_no_channels(self):
         _, _, _, runner = self.run_main("--no-channels")
