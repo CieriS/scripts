@@ -18,13 +18,18 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 
 RED = "\033[31m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
 RESET = "\033[0m"
+MAX_RULE = 130
 
 SHELLS = {"zsh", "bash", "sh", "fish", "dash"}
 
@@ -334,51 +339,96 @@ def format_ram(kb):
     return f"{kb / 1024**2:.1f} GB" if kb >= 1024**2 else f"{kb / 1024:.0f} MB"
 
 
+def paint(text, color, width=0):
+    """Pad before coloring: escape codes must not count in the column width. Negative width: right-align."""
+    pad = " " * max(0, abs(width) - len(text))
+    return f"{pad if width < 0 else ''}{color}{text}{RESET if color else ''}{pad if width > 0 else ''}"
+
+
 def format_ports(addresses):
-    """Network binds in red; the whole address is shown, since the bind is the point."""
-    return " ".join(f"{RED}{a}{RESET}" if is_exposed(a) else a for a in addresses) or "—"
+    """Network binds in red, local ones dim; the whole address is shown, since the bind is the point."""
+    return " ".join(paint(a, RED if is_exposed(a) else DIM) for a in addresses) or paint("—", DIM)
+
+
+def age_cell(seconds, width):
+    """Yellow from one day on: what was forgotten must stand out. Red stays reserved for exposure."""
+    color = YELLOW if seconds >= 86400 else GREEN if seconds < 3600 else ""
+    return paint(format_age(seconds), color, width)
+
+
+def usage_cells(cpu, kb):
+    cpu_color = YELLOW if cpu >= 25 else DIM if cpu < 1 else ""
+    ram_color = YELLOW if kb >= 1024**2 else ""
+    return paint(f"{cpu:.1f}", cpu_color, -6), paint(format_ram(kb), ram_color, -8)
+
+
+def folder_cell(folder, width):
+    """The project name stands out from the path leading to it."""
+    parent, slash, name = folder.rpartition("/")
+    pad = " " * max(0, width - len(folder))
+    return f"{paint(parent + slash, DIM) if slash else ''}{paint(name, CYAN)}{pad}"
+
+
+def command_cell(row, width):
+    extra = f" +{row.members - 1}" if row.members > 1 else ""
+    pad = " " * max(0, width - len(row.command) - len(extra))
+    return f"{row.command}{paint(extra, DIM) if extra else ''}{pad}"
+
+
+def section_title(icon, title, count, rule):
+    return [f"{BOLD}{icon} {title}{RESET} {DIM}({count}){RESET}", paint("─" * rule, DIM)]
 
 
 def process_lines(rows, with_folder):
     head = f"{'PID':>7}  {'ETÀ':>7}  {'CPU%':>6}  {'RAM':>8}  "
     head += f"{'CARTELLA':<32}  " if with_folder else ""
-    lines = [f"{DIM}{head}{'COMANDO':<48}  PORTE{RESET}"]
+    lines = [paint(f"{head}{'COMANDO':<42}  PORTE", DIM)]
     for row in rows:
-        line = f"{row.pid:>7}  {format_age(row.age):>7}  {row.cpu:>6.1f}  {format_ram(row.rss_kb):>8}  "
-        line += f"{row.folder:<32}  " if with_folder else ""
-        count = f" [{row.members} proc]" if row.members > 1 else ""
-        lines.append(f"{line}{row.command + count:<48}  {format_ports(row.ports)}")
+        cpu, ram = usage_cells(row.cpu, row.rss_kb)
+        line = f"{row.pid:>7}  {age_cell(row.age, -7)}  {cpu}  {ram}  "
+        line += f"{folder_cell(row.folder, 32)}  " if with_folder else ""
+        lines.append(f"{line}{command_cell(row, 42)}  {format_ports(row.ports)}")
     return lines
 
 
 def container_lines(containers):
     if containers is None:
-        return ["OrbStack non attivo"]
+        return [paint("OrbStack non attivo", YELLOW)]
     if not containers:
-        return ["Nessun container in esecuzione"]
-    lines = [f"{DIM}{'NOME':<26}  {'IMMAGINE':<30}  {'SU DA':>8}  {'CPU%':>6}  {'RAM':>8}  PORTE{RESET}"]
+        return [paint("Nessun container in esecuzione", DIM)]
+    lines = [paint(f"{'NOME':<26}  {'IMMAGINE':<30}  {'SU DA':>8}  {'CPU%':>6}  {'RAM':>8}  PORTE", DIM)]
     for c in sorted(containers, key=lambda c: -c.age):
-        lines.append(f"{c.name:<26}  {c.image[:30]:<30}  {format_age(c.age):>8}  {c.cpu:>6.1f}  "
-                     f"{format_ram(c.rss_kb):>8}  {format_ports(merge_ports(c.ports))}")
+        cpu, ram = usage_cells(c.cpu, c.rss_kb)
+        lines.append(f"{paint(c.name, CYAN, 26)}  {paint(c.image[:30], DIM, 30)}  {age_cell(c.age, -8)}  "
+                     f"{cpu}  {ram}  {format_ports(merge_ports(c.ports))}")
     return lines
 
 
-def render(groups, containers, others):
+def exposed_count(rows, containers):
+    ports = [a for row in rows for a in row.ports] + [a for c in containers for a in merge_ports(c.ports)]
+    return sum(is_exposed(a) for a in ports)
+
+
+def render(groups, containers, others, rule=MAX_RULE):
     counted = groups + [row for row in others if row.in_total]
     boxes = containers or []
     processes = sum(row.members for row in counted)
     cpu = sum(row.cpu for row in counted) + sum(c.cpu for c in boxes)
     ram = sum(row.rss_kb for row in counted) + sum(c.rss_kb for c in boxes)
-    lines = [f"{BOLD}Processi di sviluppo{RESET}"]
-    lines += process_lines(groups, True) if groups else ["Nessuno"]
-    lines += ["", f"{BOLD}Container in esecuzione{RESET}"] + container_lines(containers)
-    lines += ["", f"{BOLD}Altri processi in ascolto su TCP{RESET}"]
-    lines += process_lines(others, False) if others else ["Nessuno"]
-    lines += ["", f"{BOLD}Totale:{RESET} {processes} processi, {len(boxes)} container, "
-                  f"CPU {cpu:.1f}%, RAM {format_ram(ram)}",
-              f"{DIM}Processi di root non inclusi (niente sudo). OrbStack è escluso dal totale: "
-              f"contiene già i container.{RESET}",
-              f"{DIM}Per chiudere a mano: kill <PID>{RESET}"]
+    exposed = exposed_count(groups + others, boxes)
+    lines = [""] + section_title("🔧", "Processi di sviluppo", len(groups), rule)
+    lines += process_lines(groups, True) if groups else [paint("Nessuno", DIM)]
+    lines += [""] + section_title("🐳", "Container in esecuzione", len(boxes), rule) + container_lines(containers)
+    lines += [""] + section_title("🔌", "Altri processi in ascolto su TCP", len(others), rule)
+    lines += process_lines(others, False) if others else [paint("Nessuno", DIM)]
+    lines += ["", paint("─" * rule, DIM),
+              f"{BOLD}Totale:{RESET} {processes} processi, {len(boxes)} container, "
+              f"CPU {cpu:.1f}%, RAM {format_ram(ram)}",
+              paint(f"⚠ {exposed} porte esposte alla rete", RED) if exposed
+              else paint("✓ Nessuna porta esposta alla rete", GREEN),
+              paint("Processi di root non inclusi (niente sudo). OrbStack è escluso dal totale: "
+                    "contiene già i container.", DIM),
+              paint("Per chiudere a mano: kill <PID>", DIM), ""]
     return "\n".join(lines)
 
 
@@ -415,7 +465,7 @@ def main():
     groups = build_groups(procs, selected, cwds, listeners, root)
     containers = read_containers()
     others = other_listeners(procs, listeners, selected, containers or [])
-    print(render(groups, containers, others))
+    print(render(groups, containers, others, min(shutil.get_terminal_size().columns, MAX_RULE)))
 
 
 if __name__ == "__main__":

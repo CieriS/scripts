@@ -19,7 +19,9 @@ Each section is sorted by age, oldest first: what was forgotten is usually the o
 3. **Other TCP listeners**: anything listening that sections 1 and 2 do not cover.
 
 Ports bound to anything other than `127.x` or `[::1]` are red: they are reachable from the network.
-When a port is bound both locally and to the network, the network bind is the one shown.
+When a port is bound both locally and to the network, the network bind is the one shown. Red is
+reserved for this. Age is yellow from one day on and green under one hour; the last lines give the
+totals and how many ports are exposed.
 
 ## Selection rules
 

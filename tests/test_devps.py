@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import pathlib
+import re
 import unittest
 from unittest import mock
 
@@ -86,7 +87,7 @@ class ExposureTests(unittest.TestCase):
         out = dp.format_ports(["*:1", "127.0.0.1:2"])
         self.assertIn(f"{dp.RED}*:1{dp.RESET}", out)
         self.assertNotIn(f"{dp.RED}127.0.0.1:2", out)
-        self.assertEqual(dp.format_ports([]), "—")
+        self.assertIn("—", dp.format_ports([]))
 
 
 class SelectionTests(unittest.TestCase):
@@ -215,6 +216,22 @@ class RenderTests(unittest.TestCase):
         self.assertIn("3 processi, 1 container, CPU 3.0%, RAM 2 MB", out)
         self.assertIn("root non inclusi", out)
         self.assertIn("kill <PID>", out)
+
+    def test_exposed_ports_counted_across_sections(self):
+        group = dp.Row(1, 9, 0.0, 1, "a", ports=["*:1", "127.0.0.1:2"])
+        other = dp.Row(2, 9, 0.0, 1, "b", ports=["[::]:3"])
+        box = dp.Container("c", "i", "Up 1 second", 1, ["0.0.0.0:4", "[::]:4", "127.0.0.1:5"])
+        self.assertIn("3 porte esposte", dp.render([group], [box], [other]))
+
+    def test_nothing_exposed_is_stated(self):
+        self.assertIn("Nessuna porta esposta", dp.render([dp.Row(1, 9, 0.0, 1, "a", ports=["[::1]:1"])], [], []))
+
+    def test_escape_codes_do_not_break_alignment(self):
+        plain = re.compile(r"\033\[[0-9]+m")
+        rows = [dp.Row(1, 90000, 50.0, 2 * 1024**2, "a", "repositories/x", ["*:1"], 3),
+                dp.Row(22, 5, 0.0, 1024, "bb", "—", ["127.0.0.1:1"])]
+        starts = {len(plain.sub("", line).rsplit("  ", 1)[0]) for line in dp.process_lines(rows, True)[1:]}
+        self.assertEqual(len(starts), 1)
 
     def test_ages(self):
         self.assertEqual([dp.format_age(s) for s in (5, 120, 3700, 90000)], ["5s", "2m", "1h 1m", "1g 1h"])
