@@ -11,6 +11,7 @@ own and run with `uv run`).
 | Audio | [`audio/`](audio/) | Song tempo converted into video frames; songs split into stems and the guitar into MIDI |
 | Media | [`media/`](media/) | Photos and videos sorted by kind and subject (landscape, food, people), for editing |
 | Video | [`video/`](video/) | Full transcript of an online video (YouTube, Instagram, TikTok…) as clean text, from subtitles or local speech recognition |
+| Processes | [`devps/`](devps/) | Read-only list of running development processes and containers: age, usage, exposed ports |
 
 ## Where to look
 
@@ -23,6 +24,7 @@ own and run with `uv run`).
 | Split songs into stems, guitar into MIDI | [`audio/README.md`](audio/README.md) |
 | Sort photos and videos by subject | [`media/README.md`](media/README.md) |
 | Get the transcript of a video | [`video/README.md`](video/README.md) |
+| See forgotten development processes | [`devps/README.md`](devps/README.md) |
 | Check your changes or add a script | [Development](#development) |
 | Understand why the repository is shaped this way | [Decisions](#decisions) |
 | Know what is not covered yet | [Known limitations](#known-limitations) |
@@ -47,6 +49,9 @@ own and run with `uv run`).
 ├── video/
 │   ├── README.md                   # usage, options, source choice, limitations
 │   └── transcript.py               # transcript of a video: subtitles, else local mlx-whisper
+├── devps/
+│   ├── README.md                   # sections, selection rules, limitations
+│   └── devps.py                    # running development processes, containers, TCP listeners
 ├── tests/
 │   ├── existingFileWithString.test.sh   # Bash tests of the shell helper
 │   ├── ig-who-unfollowed.test.js        # Node tests of the Instagram script
@@ -55,6 +60,7 @@ own and run with `uv run`).
 │   ├── test_split_stems.py              # Python tests of the stems script (fake Demucs and Basic Pitch)
 │   ├── test_sort_media.py               # Python tests of the media script (fake classifier)
 │   ├── test_transcript.py               # Python tests of the video script (fake yt-dlp)
+│   ├── test_devps.py                    # Python tests of devps (invented ps, lsof and docker output)
 │   └── fixtures/video/                  # hand-written WebVTT files, invented text only
 ├── check.sh                        # lint, syntax check and tests (also run by CI)
 └── .github/                        # CI workflow and Dependabot
