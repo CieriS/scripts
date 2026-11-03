@@ -2,7 +2,8 @@
 
 ## `transcript.py`
 
-Prints the full transcript of one online video as clean, readable text, ready to paste
+Prints the full transcript of one online video, or of every video of a post (carousel,
+thread), as clean, readable text, ready to paste
 somewhere else for analysis. It works with every site yt-dlp supports (YouTube, Instagram,
 TikTok, X, Facebook, Vimeo, Reddit…), but how much works **without logging in** depends on
 the site: see [Sites with and without login](#sites-with-and-without-login). The output has no timestamps, tags
@@ -16,6 +17,7 @@ uv run video/transcript.py "https://www.instagram.com/reel/ID/" --cookies-from-b
 uv run video/transcript.py "https://www.tiktok.com/@user/video/ID" --cookies ~/cookies.txt
 uv run video/transcript.py URL --lang en,it -o transcript.txt
 uv run video/transcript.py URL --timestamps
+uv run video/transcript.py "https://x.com/user/status/ID"   # a post with several videos
 ```
 
 Requirements: `uv` and `yt-dlp` (`brew install yt-dlp`). Keep yt-dlp up to date: the sites change often and
@@ -40,20 +42,21 @@ First paragraph…
 
 | Option | Default | Effect |
 |---|---|---|
-| `url` | — | One video, `http(s)` on any site yt-dlp supports. YouTube URLs (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`) are normalized and a `list=` parameter is dropped. Posts with several videos (carousels, threads, playlists) are rejected |
+| `url` | — | One video or one post, `http(s)` on any site yt-dlp supports. YouTube URLs (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`) are normalized and a `list=` parameter is dropped. Posts with several videos are transcribed video by video: see [Posts with several videos](#posts-with-several-videos) |
 | `--lang it,en` | `it,en` | Preferred subtitle languages, in order. `en` also matches `en-US`, `en-GB` |
 | `-o`, `--output FILE` | stdout | Write the transcript to a file |
 | `--timestamps` | off | Start each paragraph with `[mm:ss]` (or `[h:mm:ss]`) |
 | `--model REPO` | `mlx-community/whisper-large-v3-turbo` | mlx-whisper model (Hugging Face repository) of the local fallback, e.g. `mlx-community/whisper-small-mlx` for a faster, less accurate run |
 | `--no-fallback` | off | Fail instead of downloading and transcribing the audio |
+| `--max-videos N` | `20` | Most videos of one post to transcribe; a post with more is refused before any download. `N` from 1 up |
 | `--cookies-from-browser NAME` | off | Use the login of this browser (`chrome`, `brave`, `firefox`, `safari`…) for sites that require it. Without it (or `--cookies`) no login is ever used |
 | `--cookies FILE` | off | Use the login stored in a cookie file in Netscape format (`cookies.txt`), see [Login from a cookie file](#login-from-a-cookie-file). Cannot be combined with `--cookies-from-browser` |
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Transcript printed or written |
-| `1` | Video private, unavailable, behind a login or with several videos; site not supported; no subtitles and no audio, or the local transcription failed or was disabled; empty transcript |
-| `2` | Wrong arguments (also a `--cookies` file that does not exist, or both login options), not an `http(s)` URL, or a YouTube URL that is not a single video |
+| `1` | Video private, unavailable or behind a login; post with more videos than `--max-videos`, or none of its videos transcribed; site not supported; no subtitles and no audio, or the local transcription failed or was disabled; empty transcript |
+| `2` | Wrong arguments (also a `--cookies` file that does not exist, both login options, or `--max-videos` below 1), not an `http(s)` URL, or a YouTube URL that is not a single video |
 | `3` | `yt-dlp` not found |
 
 ### How the source is chosen
@@ -71,6 +74,48 @@ them are video only, it stops with an error instead of downloading a file withou
 Automatic captions in other languages are YouTube's machine translations and are never used,
 so a video in Spanish gives a Spanish transcript even with `--lang it,en`.
 
+### Posts with several videos
+
+yt-dlp returns an Instagram carousel or an X post with several videos as a playlist. The
+script reads its metadata once, then transcribes each video in order, selecting it with
+`--playlist-items N` (subtitles first, then audio, as for a single video). The output has one
+section per video, separated by a `---` line; each header adds `Video: N di TOTALE` and the
+fields an entry lacks (title, author) come from the post. With `--timestamps` the times
+restart at every video.
+
+```
+Titolo: …
+…
+Video: 1 di 2
+Fonte: trascrizione locale (…)
+
+First video…
+
+---
+
+Titolo: …
+Video: 2 di 2
+…
+```
+
+- A video that cannot be transcribed (no audio, unavailable, empty) does not stop the others:
+  its section says `Fonte: nessuna` and `Non trascritto: <reason>`. The run fails (exit 1) only
+  when no video of the post was transcribed, with the reasons in the error.
+- **Limit**: a post with more than `--max-videos` videos (20 by default) is refused before any
+  download, so a channel or a playlist pasted by mistake does not start hours of downloads.
+  Why 20: an Instagram carousel holds at most 20 items; raise it with `--max-videos` when a
+  longer list is really wanted.
+- YouTube playlists are never read as posts: a `list=` parameter is dropped and
+  `/playlist?list=` URLs are refused, as before.
+
+Checked live on 2026-11-03 (yt-dlp 2026.08.19, no login): an X post with 2 videos gave two
+sections with different text; an Instagram carousel with 3 videos was split correctly, but
+all 3 were video only, so the run ended with the "no audio" error.
+
+Why sections in one output instead of one file per video: the output is meant to be pasted
+somewhere else in one go, and the header of each section keeps the videos apart (decided in
+#12, 2026-11-03).
+
 ### Sites with and without login
 
 Checked live on 2026-11-03 with yt-dlp 2026.08.19, running the script on sample videos of
@@ -79,7 +124,7 @@ yt-dlp's own tests, without login and with `--cookies` (a file exported from Saf
 | Site | Without login | With login (`--cookies`) |
 |---|---|---|
 | YouTube | Works: subtitles, otherwise audio (checked 2026-10-21) | Not needed |
-| Instagram | Depends on the reel: some have audio and are transcribed, others list only video formats and stop with an error. Carousels are rejected | Same result: the login only adds the duration, the reels without audio stay without audio |
+| Instagram | Depends on the reel: some have audio and are transcribed, others list only video formats and stop with an error. Carousels are split into their videos, with the same audio limit | Same result: the login only adds the duration, the reels without audio stay without audio |
 | Reddit | yt-dlp is asked to log in | Works: manual subtitles when the post has them, otherwise audio |
 | TikTok | yt-dlp is asked to log in | Does not work: with a valid session all 5 samples gave "Your IP address is blocked from accessing this post". Known limitation, not worked around |
 | X | Works on current posts (audio); old sample posts are gone | Same result |
@@ -165,6 +210,7 @@ clear error while subtitles keep working.
   answers that the IP address is blocked (5 sample videos, 2026-11-03). A cookie file exported
   without a TikTok login (no `sessionid` cookie) gives the login error again. Check again
   after `brew upgrade yt-dlp`; working around the block (proxy, VPN) is out of scope.
-- One video at a time: carousels and threads with several videos are rejected.
+- In a multi-video post the photos are skipped (yt-dlp lists only the videos), and the post's
+  caption is not included.
 - The text of a post (caption, description) is not included, only what is said.
 - The tests use a fake yt-dlp and a fake engine; the real paths were checked by hand.

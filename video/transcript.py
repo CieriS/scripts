@@ -7,15 +7,17 @@
 
 Usage:
     uv run video/transcript.py <url> [--lang it,en] [-o FILE] [--timestamps]
-        [--model REPO] [--no-fallback] [--cookies-from-browser BROWSER | --cookies FILE]
+        [--model REPO] [--no-fallback] [--max-videos N]
+        [--cookies-from-browser BROWSER | --cookies FILE]
 
 Works with any site yt-dlp (Homebrew binary) supports: YouTube, Instagram, TikTok, X,
 Facebook, Vimeo, Reddit... Subtitles are read without downloading the video: manual subtitles
 first, then automatic captions in the video's original language. When a video has none, only
 the audio is downloaded and transcribed locally with mlx-whisper (Apple Silicon only; the
 model is downloaded on the first run). No login is used unless --cookies-from-browser or
---cookies is given. One video at a time: posts with several videos are rejected. Temporary files live in a
-temporary directory that is always removed. Output messages are in Italian.
+--cookies is given. Posts with several videos (carousels, threads) are transcribed video by
+video, one section each, up to --max-videos. Temporary files live in a temporary directory that
+is always removed. Output messages are in Italian.
 """
 
 import argparse
@@ -32,6 +34,9 @@ from urllib.parse import parse_qs, urlparse
 
 DEFAULT_LANGS = ("it", "en")
 DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
+# a carousel holds at most 20 items; more is a channel or a playlist pasted by mistake
+DEFAULT_MAX_VIDEOS = 20
+SECTION_BREAK = "\n\n---\n\n"  # between the videos of a multi-video post
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -110,14 +115,26 @@ def normalize_url(url):
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
-def check_single_video(info):
-    """Reject posts with several videos (carousels, threads): one video at a time."""
-    if info.get("_type") in ("playlist", "multi_video"):
-        count = len(info.get("entries") or [])
+def split_videos(info, limit):
+    """Return the videos of a post as (playlist item or None, info) pairs, in order.
+
+    A single video gives [(None, info)]. A carousel or thread (yt-dlp "playlist" or
+    "multi_video") gives one pair per entry, numbered from 1 as --playlist-items expects; the
+    post's own fields (title, uploader...) fill what an entry lacks. More than `limit` videos is
+    refused before any download, so a long playlist is never fetched by mistake.
+    """
+    if info.get("_type") not in ("playlist", "multi_video"):
+        return [(None, info)]
+    entries = info.get("entries") or []
+    if not entries:
+        raise TranscriptError("nel link non c'è nessun video")
+    if len(entries) > limit:
         raise TranscriptError(
-            f"il link contiene {count or 'più'} video (carosello, thread o playlist): "
-            "per ora si trascrive un video alla volta"
+            f"il link contiene {len(entries)} video, più del limite di {limit}: se sono davvero "
+            "da trascrivere tutti, riprova con --max-videos"
         )
+    post = {k: v for k, v in info.items() if k not in ("entries", "_type")}
+    return [(index, {**post, **(entry or {})}) for index, entry in enumerate(entries, start=1)]
 
 
 def has_audio(info):
@@ -265,16 +282,18 @@ def to_paragraphs(words, timestamps=False):
     return "\n\n".join(lines)
 
 
-def format_header(info, url, source_label):
-    return "\n".join(
-        [
-            f"Titolo: {info.get('title') or '?'}",
-            f"Autore: {info.get('channel') or info.get('uploader') or '?'}",
-            f"Piattaforma: {info.get('extractor_key') or info.get('extractor') or '?'}",
-            f"URL: {info.get('webpage_url') or url}",
-            f"Fonte: {source_label}",
-        ]
-    )
+def format_header(info, url, source_label, position=None):
+    """Header of one transcript; `position` is (n, total) for a video of a multi-video post."""
+    lines = [
+        f"Titolo: {info.get('title') or '?'}",
+        f"Autore: {info.get('channel') or info.get('uploader') or '?'}",
+        f"Piattaforma: {info.get('extractor_key') or info.get('extractor') or '?'}",
+        f"URL: {info.get('webpage_url') or url}",
+    ]
+    if position:
+        lines.append(f"Video: {position[0]} di {position[1]}")
+    lines.append(f"Fonte: {source_label}")
+    return "\n".join(lines)
 
 
 def ytdlp_error_message(stderr):
@@ -340,15 +359,19 @@ def fetch_info(url, options=()):
         info = json.loads(out)
     except json.JSONDecodeError as exc:
         raise TranscriptError("risposta di yt-dlp non leggibile") from exc
-    check_single_video(info)
     return info
 
 
-def download_subtitles(url, source, tmp, options=()):
+def item_options(item):
+    """yt-dlp options that select one video: a playlist item, or no playlist at all."""
+    return ["--no-playlist"] if item is None else ["--playlist-items", str(item)]
+
+
+def download_subtitles(url, source, tmp, options=(), item=None):
     flag = "--write-subs" if source.kind == "manual" else "--write-auto-subs"
     run_ytdlp(
         [
-            "--skip-download", "--no-playlist", flag,
+            "--skip-download", *item_options(item), flag,
             "--sub-langs", f"^{re.escape(source.lang)}$", "--sub-format", "vtt",
             "-o", str(Path(tmp) / "subs"), *options, url,
         ]
@@ -359,9 +382,9 @@ def download_subtitles(url, source, tmp, options=()):
     return files[0].read_text(encoding="utf-8")
 
 
-def download_audio(url, tmp, options=()):
+def download_audio(url, tmp, options=(), item=None):
     out = str(Path(tmp) / "audio.%(ext)s")
-    run_ytdlp(["-f", "bestaudio/best", "--no-playlist", "-o", out, *options, url])
+    run_ytdlp(["-f", "bestaudio/best", *item_options(item), "-o", out, *options, url])
     files = [p for p in Path(tmp).glob("audio.*") if not p.name.endswith(".part")]
     if not files:
         raise TranscriptError("audio non scaricato")
@@ -395,31 +418,63 @@ def login_options(cookies_from_browser=None, cookies=None):
     return []
 
 
-def transcript(url, langs, timestamps, model, fallback, options=()):
-    """Return the full text (header + paragraphs) for a video; `options` holds the login."""
+def transcribe_video(url, info, tmp, settings, options, item=None):
+    """Return (source label, words) for one video; `item` selects it inside a post."""
+    langs, model, fallback = settings
+    source = choose_source(info, langs)
+    if source:
+        cues = parse_vtt(download_subtitles(url, source, tmp, options, item))
+        words = merge_cues(cues, rolling=source.kind == "auto")
+        label = f"{SOURCE_LABELS[source.kind]} ({source.lang})"
+    else:
+        if not fallback:
+            raise TranscriptError("nessun sottotitolo disponibile e trascrizione locale disattivata")
+        if not has_audio(info):
+            raise TranscriptError(NO_AUDIO)
+        print(f"Nessun sottotitolo: scarico l'audio e lo trascrivo con {model}...", file=sys.stderr)
+        audio = download_audio(url, tmp, options, item)
+        words = merge_cues(transcribe_local(audio, model, info.get("language")), rolling=False)
+        label = f"{SOURCE_LABELS['local']} ({model})"
+    if not words:
+        raise TranscriptError("la trascrizione è vuota")
+    return label, words
+
+
+def transcript(url, langs, timestamps, model, fallback, options=(), max_videos=DEFAULT_MAX_VIDEOS):
+    """Return the full text (header + paragraphs) for a video or every video of a post.
+
+    `options` holds the login. In a multi-video post a video that fails becomes a section with
+    the reason and the others go on; the run fails only when no video was transcribed.
+    """
     url = normalize_url(url)
     if shutil.which("yt-dlp") is None:
         raise TranscriptError("yt-dlp non trovato: installalo con brew install yt-dlp", EXIT_NO_YTDLP)
     options = list(options)
+    settings = (langs, model, fallback)
     with tempfile.TemporaryDirectory(prefix="video-transcript-") as tmp:
-        info = fetch_info(url, options)
-        source = choose_source(info, langs)
-        if source:
-            cues = parse_vtt(download_subtitles(url, source, tmp, options))
-            words = merge_cues(cues, rolling=source.kind == "auto")
-            label = f"{SOURCE_LABELS[source.kind]} ({source.lang})"
-        else:
-            if not fallback:
-                raise TranscriptError("nessun sottotitolo disponibile e trascrizione locale disattivata")
-            if not has_audio(info):
-                raise TranscriptError(NO_AUDIO)
-            print(f"Nessun sottotitolo: scarico l'audio e lo trascrivo con {model}...", file=sys.stderr)
-            segments = transcribe_local(download_audio(url, tmp, options), model, info.get("language"))
-            words = merge_cues(segments, rolling=False)
-            label = f"{SOURCE_LABELS['local']} ({model})"
-        if not words:
-            raise TranscriptError("la trascrizione è vuota")
-        return f"{format_header(info, url, label)}\n\n{to_paragraphs(words, timestamps)}\n"
+        videos = split_videos(fetch_info(url, options), max_videos)
+        if len(videos) == 1 and videos[0][0] is None:
+            label, words = transcribe_video(url, videos[0][1], tmp, settings, options)
+            return f"{format_header(videos[0][1], url, label)}\n\n{to_paragraphs(words, timestamps)}\n"
+        sections = []
+        failures = []
+        for item, info in videos:
+            print(f"Video {item} di {len(videos)}...", file=sys.stderr)
+            video_tmp = Path(tmp) / str(item)
+            video_tmp.mkdir()
+            try:
+                label, words = transcribe_video(url, info, video_tmp, settings, options, item)
+            except TranscriptError as exc:
+                header = format_header(info, url, "nessuna", (item, len(videos)))
+                sections.append(f"{header}\n\nNon trascritto: {exc}")
+                failures.append(str(exc))
+                continue
+            header = format_header(info, url, label, (item, len(videos)))
+            sections.append(f"{header}\n\n{to_paragraphs(words, timestamps)}")
+        if len(failures) == len(videos):
+            reasons = "; ".join(dict.fromkeys(failures))  # same reason once
+            raise TranscriptError(f"nessuno dei {len(videos)} video del link è stato trascritto: {reasons}")
+        return SECTION_BREAK.join(sections) + "\n"
 
 
 def parse_args(argv):
@@ -437,6 +492,7 @@ def parse_args(argv):
   uv run video/transcript.py URL --timestamps
   uv run video/transcript.py URL --no-fallback
   uv run video/transcript.py URL --model mlx-community/whisper-small-mlx
+  uv run video/transcript.py URL_CAROSELLO --max-videos 30   # post con più di 20 video
   uv run video/transcript.py URL --cookies-from-browser chrome   # solo se il sito chiede il login
   uv run video/transcript.py URL --cookies ~/cookies.txt         # login da un file esportato
 
@@ -444,7 +500,7 @@ fonte: sottotitoli manuali > automatici (lingua originale) > trascrizione locale
 exit code: 0 ok, 1 video non disponibile o trascrizione fallita, 2 argomenti o URL non
 validi, 3 yt-dlp assente.""",
     )
-    parser.add_argument("url", help="indirizzo di un singolo video")
+    parser.add_argument("url", help="indirizzo di un video o di un post con più video")
     parser.add_argument(
         "--lang", default=",".join(DEFAULT_LANGS),
         help="lingue preferite dei sottotitoli, in ordine (default: %(default)s)",
@@ -458,6 +514,11 @@ validi, 3 yt-dlp assente.""",
     parser.add_argument(
         "--no-fallback", action="store_true",
         help="non trascrivere l'audio in locale quando mancano i sottotitoli",
+    )
+    parser.add_argument(
+        "--max-videos", type=int, default=DEFAULT_MAX_VIDEOS, metavar="N",
+        help="numero massimo di video di un post (carosello, thread) da trascrivere; oltre, "
+        "errore prima di scaricare (default: %(default)s)",
     )
     login = parser.add_mutually_exclusive_group()
     login.add_argument(
@@ -476,6 +537,8 @@ validi, 3 yt-dlp assente.""",
         if not cookies.is_file():
             parser.error(f"--cookies: file non trovato: {args.cookies}")
         args.cookies = str(cookies.resolve())
+    if args.max_videos < 1:
+        parser.error("--max-videos: serve un numero da 1 in su")
     args.langs = [lang.strip() for lang in args.lang.split(",") if lang.strip()]
     if not args.langs:
         parser.error("--lang: serve almeno una lingua")
@@ -487,7 +550,7 @@ def main(argv=None):
     try:
         text = transcript(
             args.url, args.langs, args.timestamps, args.model, not args.no_fallback,
-            login_options(args.cookies_from_browser, args.cookies),
+            login_options(args.cookies_from_browser, args.cookies), args.max_videos,
         )
     except TranscriptError as exc:
         print(f"Errore: {exc}", file=sys.stderr)

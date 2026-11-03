@@ -75,20 +75,47 @@ class NormalizeOtherSites(unittest.TestCase):
                 self.assertEqual(tr.normalize_url(f" {url} "), url)
 
 
-class CheckSingleVideo(unittest.TestCase):
-    def test_single_video_accepted(self):
-        tr.check_single_video({"_type": "video"})
-        tr.check_single_video({})
+class SplitVideos(unittest.TestCase):
+    def test_single_video_has_no_item(self):
+        for info in ({"_type": "video", "title": "t"}, {}):
+            self.assertEqual(tr.split_videos(info, 20), [(None, info)])
 
-    def test_carousel_rejected_with_count(self):
-        with self.assertRaises(tr.TranscriptError) as ctx:
-            tr.check_single_video({"_type": "playlist", "entries": [{}, {}, {}]})
-        self.assertIn("contiene 3 video", str(ctx.exception))
+    def test_entries_numbered_from_one_with_post_fields(self):
+        info = {
+            "_type": "playlist", "title": "Post", "uploader": "Utente Finto", "id": "post",
+            "entries": [{"id": "a", "title": "Primo"}, {"id": "b"}],
+        }
+        videos = tr.split_videos(info, 20)
+        self.assertEqual([item for item, _ in videos], [1, 2])
+        self.assertEqual(videos[0][1]["title"], "Primo")  # the entry wins
+        self.assertEqual(videos[1][1]["title"], "Post")  # the post fills the gap
+        self.assertEqual(videos[1][1]["uploader"], "Utente Finto")
+        self.assertNotIn("entries", videos[0][1])
+        self.assertNotIn("_type", videos[0][1])
 
-    def test_multi_video_without_entries(self):
+    def test_missing_entry_kept_as_post_fields(self):
+        videos = tr.split_videos({"_type": "multi_video", "title": "Post", "entries": [None]}, 20)
+        self.assertEqual(videos, [(1, {"title": "Post"})])
+
+    def test_no_entries(self):
+        for info in ({"_type": "multi_video"}, {"_type": "playlist", "entries": []}):
+            with self.subTest(info=info), self.assertRaises(tr.TranscriptError) as ctx:
+                tr.split_videos(info, 20)
+            self.assertEqual(str(ctx.exception), "nel link non c'è nessun video")
+
+    def test_limit_is_inclusive(self):
+        info = {"_type": "playlist", "entries": [{}, {}, {}]}
+        self.assertEqual(len(tr.split_videos(info, 3)), 3)
         with self.assertRaises(tr.TranscriptError) as ctx:
-            tr.check_single_video({"_type": "multi_video"})
-        self.assertIn("contiene più video", str(ctx.exception))
+            tr.split_videos(info, 2)
+        self.assertIn("contiene 3 video, più del limite di 2", str(ctx.exception))
+        self.assertIn("--max-videos", str(ctx.exception))
+
+
+class ItemOptions(unittest.TestCase):
+    def test_single_video_and_item(self):
+        self.assertEqual(tr.item_options(None), ["--no-playlist"])
+        self.assertEqual(tr.item_options(3), ["--playlist-items", "3"])
 
 
 class HasAudio(unittest.TestCase):
@@ -302,16 +329,19 @@ class YtdlpErrors(unittest.TestCase):
 class FakeYtdlp:
     """Stands in for run_ytdlp: answers -J with `info`, writes fixture files for downloads."""
 
-    def __init__(self, info, vtt="manual.vtt", fail_on=None):
+    def __init__(self, info, vtt="manual.vtt", fail_on=None, fail_items=()):
         self.info = info
         self.vtt = vtt
         self.fail_on = fail_on
+        self.fail_items = {str(item) for item in fail_items}
         self.calls = []
         self.tmp_dirs = []
 
     def __call__(self, args):
         self.calls.append(args)
         if self.fail_on and self.fail_on in args:
+            raise tr.TranscriptError("il video non è disponibile")
+        if "--playlist-items" in args and args[args.index("--playlist-items") + 1] in self.fail_items:
             raise tr.TranscriptError("il video non è disponibile")
         if "--dump-single-json" in args:
             return json.dumps(self.info)
@@ -465,13 +495,106 @@ class Main(unittest.TestCase):
         self.assertEqual([call[-1] for call in fake.calls], [reel, reel])
         self.assertIsNone(local.call_args.args[2])  # no language: Whisper detects it
 
-    def test_carousel_rejected_before_any_download(self):
-        fake = FakeYtdlp({**INFO, "_type": "playlist", "entries": [{}, {}]})
+    def carousel(self, *entries):
+        return {
+            "_type": "playlist", "title": "Post inventato", "uploader": "utente_finto",
+            "extractor_key": "Instagram", "webpage_url": "https://www.instagram.com/p/Abc123/",
+            "entries": list(entries),
+        }
+
+    def test_carousel_every_video_in_order(self):
+        fake = FakeYtdlp(self.carousel({"subtitles": {"it": []}}, {"title": "Secondo"}))
+        local = mock.Mock(return_value=[(0.0, "Seconda storia inventata.")])
+        code, out, err = self.run_main(fake, transcribe=local)
+        self.assertEqual(code, 0)
+        first, second = out.split(tr.SECTION_BREAK)
+        self.assertTrue(first.startswith(
+            "Titolo: Post inventato\nAutore: utente_finto\nPiattaforma: Instagram\n"
+            "URL: https://www.instagram.com/p/Abc123/\nVideo: 1 di 2\n"
+            "Fonte: sottotitoli manuali (it)\n\nBenvenuti"
+        ))
+        self.assertTrue(second.startswith("Titolo: Secondo\n"))
+        self.assertIn("Video: 2 di 2\nFonte: trascrizione locale", second)
+        self.assertTrue(out.endswith("Seconda storia inventata.\n"))
+        self.assertIn("Video 1 di 2...", err)
+        self.assertIn("Video 2 di 2...", err)
+        # info once, then one download per video, each selecting its own item
+        self.assertEqual(len(fake.calls), 3)
+        self.assertIn("--no-playlist", fake.calls[0])
+        for call, item in zip(fake.calls[1:], ("1", "2")):
+            self.assertEqual(call[call.index("--playlist-items") + 1], item)
+            self.assertNotIn("--no-playlist", call)
+        self.assert_tmp_removed()
+
+    def test_carousel_with_timestamps_restarts_per_video(self):
+        fake = FakeYtdlp(self.carousel({"subtitles": {"it": []}}, {"subtitles": {"it": []}}))
+        code, out, _ = self.run_main(fake, "--timestamps")
+        self.assertEqual(code, 0)
+        for section in out.split(tr.SECTION_BREAK):
+            self.assertIn("\n\n[00:01] Benvenuti", section)
+
+    def test_carousel_failed_video_reported_and_others_kept(self):
+        fake = FakeYtdlp(self.carousel({"subtitles": {"it": []}}, {"subtitles": {"it": []}}), fail_items=[1])
+        code, out, _ = self.run_main(fake)
+        self.assertEqual(code, 0)
+        first, second = out.split(tr.SECTION_BREAK)
+        self.assertIn("Video: 1 di 2\nFonte: nessuna\n\nNon trascritto: il video non è disponibile", first)
+        self.assertIn("Fonte: sottotitoli manuali (it)", second)
+        self.assert_tmp_removed()
+
+    def test_carousel_without_audio_section_explains(self):
+        silent = {"formats": [{"acodec": "none"}]}
+        fake = FakeYtdlp(self.carousel(silent, {"subtitles": {"it": []}}))
+        code, out, _ = self.run_main(fake)
+        self.assertEqual(code, 0)
+        self.assertIn(f"Non trascritto: {tr.NO_AUDIO}", out.split(tr.SECTION_BREAK)[0])
+        self.assertEqual(len(fake.calls), 2)  # no audio download for the silent video
+
+    def test_carousel_all_failed_is_an_error(self):
+        silent = {"formats": [{"acodec": "none"}]}
+        fake = FakeYtdlp(self.carousel(silent, silent))
         code, out, err = self.run_main(fake)
         self.assertEqual((code, out), (1, ""))
-        self.assertIn("contiene 2 video", err)
+        self.assertTrue(err.endswith(
+            f"Errore: nessuno dei 2 video del link è stato trascritto: {tr.NO_AUDIO}\n"
+        ))  # the same reason is written once
+        self.assert_tmp_removed()
+
+    def test_single_entry_post_still_numbered(self):
+        fake = FakeYtdlp(self.carousel({"subtitles": {"it": []}}))
+        code, out, _ = self.run_main(fake)
+        self.assertEqual(code, 0)
+        self.assertIn("Video: 1 di 1\n", out)
+        self.assertIn("--playlist-items", fake.calls[1])
+
+    def test_over_limit_rejected_before_any_download(self):
+        fake = FakeYtdlp(self.carousel(*[{} for _ in range(21)]))
+        code, out, err = self.run_main(fake)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("contiene 21 video, più del limite di 20", err)
         self.assertEqual(len(fake.calls), 1)
         self.assert_tmp_removed()
+
+    def test_max_videos_option(self):
+        fake = FakeYtdlp(self.carousel(*[{"subtitles": {"it": []}} for _ in range(3)]))
+        code, _, err = self.run_main(fake, "--max-videos", "2")
+        self.assertEqual(code, 1)
+        self.assertIn("limite di 2", err)
+        code, out, _ = self.run_main(fake, "--max-videos", "3")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("Video: "), 3)
+        for value in ("0", "-1", "tre"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as ctx:
+                tr.parse_args([URL, "--max-videos", value])
+            self.assertEqual(ctx.exception.code, tr.EXIT_USAGE)
+
+    def test_cookies_passed_to_every_video(self):
+        fake = FakeYtdlp(self.carousel({"subtitles": {"it": []}}, {"subtitles": {"it": []}}))
+        code, _, _ = self.run_main(fake, "--cookies-from-browser", "firefox")
+        self.assertEqual(code, 0)
+        for call in fake.calls:
+            self.assertIn("--cookies-from-browser", call)
 
     def test_video_without_audio_stops_before_download(self):
         info = {**INFO, "formats": [{"acodec": "none"}, {"acodec": "none"}]}

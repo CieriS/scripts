@@ -10,7 +10,7 @@ own and run with `uv run`).
 | Instagram | [`instagram/`](instagram/) | Read-only browser-console script to see who does not follow back |
 | Audio | [`audio/`](audio/) | Song tempo converted into video frames; songs split into stems and the guitar into MIDI |
 | Media | [`media/`](media/) | Photos and videos sorted by kind and subject (landscape, food, people), for editing |
-| Video | [`video/`](video/) | Full transcript of an online video (YouTube, Instagram, Reddit, X…) as clean text, from subtitles or local speech recognition |
+| Video | [`video/`](video/) | Full transcript of an online video or multi-video post (YouTube, Instagram, Reddit, X…) as clean text, from subtitles or local speech recognition |
 | Processes | [`devps/`](devps/) | Read-only list of running development processes and containers: age, usage, exposed ports |
 
 ## Where to look
@@ -153,6 +153,8 @@ by title, author, platform, URL and the source used. It works on any site yt-dlp
 reads manual subtitles, then automatic captions (no video download); when a video has none it
 downloads only the audio and transcribes it locally with mlx-whisper on Apple Silicon. No
 login is used unless `--cookies-from-browser` or `--cookies FILE` is given, which Reddit and Vimeo require (TikTok blocks the download even with a login).
+Posts with several videos (Instagram carousels, X threads) are transcribed video by video,
+one section each, up to `--max-videos` (20) so that a long playlist is never fetched by mistake.
 
 ```bash
 uv run video/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
