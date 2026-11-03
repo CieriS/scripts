@@ -152,7 +152,7 @@ Options, result layout, supported formats, edge cases and limitations are in
 by title, author, platform, URL and the source used. It works on any site yt-dlp supports. It
 reads manual subtitles, then automatic captions (no video download); when a video has none it
 downloads only the audio and transcribes it locally with mlx-whisper on Apple Silicon. No
-login is used unless `--cookies-from-browser` or `--cookies FILE` is given, which most social sites require.
+login is used unless `--cookies-from-browser` or `--cookies FILE` is given, which Reddit, TikTok and Vimeo require.
 
 ```bash
 uv run video/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy

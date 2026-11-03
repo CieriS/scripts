@@ -57,6 +57,12 @@ LOGIN_HINTS = (
     "sign in", "login", "log in", "logged-in", "authentication", "members-only",
     "confirm your age", "--cookies",
 )
+# Checked live on 2026-11-03: some Instagram reels list only video formats with or without a
+# login, so suggesting one would not help.
+NO_AUDIO = (
+    "nessun sottotitolo e il sito fornisce solo il video senza audio (succede con alcuni reel di "
+    "Instagram, anche con il login): non c'è niente da trascrivere"
+)
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 
 
@@ -401,11 +407,7 @@ def transcript(url, langs, timestamps, model, fallback, options=()):
             if not fallback:
                 raise TranscriptError("nessun sottotitolo disponibile e trascrizione locale disattivata")
             if not has_audio(info):
-                hint = "" if options else (
-                    " (succede su Instagram senza login): riprova con --cookies-from-browser e il "
-                    "nome del browser in cui hai fatto l'accesso, o con --cookies e un file di cookie"
-                )
-                raise TranscriptError(f"nessun sottotitolo e il sito fornisce solo il video senza audio{hint}")
+                raise TranscriptError(NO_AUDIO)
             print(f"Nessun sottotitolo: scarico l'audio e lo trascrivo con {model}...", file=sys.stderr)
             segments = transcribe_local(download_audio(url, tmp, options), model, info.get("language"))
             words = merge_cues(segments, rolling=False)

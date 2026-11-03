@@ -475,16 +475,17 @@ class Main(unittest.TestCase):
         fake = FakeYtdlp(info)
         code, out, err = self.run_main(fake)
         self.assertEqual((code, out), (1, ""))
-        self.assertIn("solo il video senza audio", err)
-        self.assertIn("--cookies-from-browser", err)
-        self.assertIn("--cookies e un file di cookie", err)
+        self.assertEqual(err, f"Errore: {tr.NO_AUDIO}\n")
+        self.assertNotIn("--cookies", err)  # a login does not bring the audio back
         self.assertEqual(len(fake.calls), 1)
         self.assert_tmp_removed()
 
-    def test_video_without_audio_with_cookies_has_no_hint(self):
-        fake = FakeYtdlp({**INFO, "formats": [{"acodec": "none"}]})
-        _, _, err = self.run_main(fake, "--cookies-from-browser", "chrome")
-        self.assertEqual(err, "Errore: nessun sottotitolo e il sito fornisce solo il video senza audio\n")
+    def test_video_without_audio_with_login_same_message(self):
+        for login in (["--cookies-from-browser", "chrome"], ["--cookies", str(self.cookie_file())]):
+            with self.subTest(login=login[0]):
+                fake = FakeYtdlp({**INFO, "formats": [{"acodec": "none"}]})
+                code, _, err = self.run_main(fake, *login)
+                self.assertEqual((code, err), (1, f"Errore: {tr.NO_AUDIO}\n"))
 
     def test_video_without_audio_but_subtitles_still_works(self):
         fake = FakeYtdlp({**INFO, "subtitles": {"it": []}, "formats": [{"acodec": "none"}]})
@@ -536,11 +537,6 @@ class Main(unittest.TestCase):
         self.addCleanup(os.chdir, cwd)
         os.chdir(path.parent)
         self.assertEqual(tr.parse_args([URL, "--cookies", path.name]).cookies, str(path.resolve()))
-
-    def test_without_cookies_hint_on_audio_error(self):
-        fake = FakeYtdlp({**INFO, "formats": [{"acodec": "none"}]})
-        _, _, err = self.run_main(fake, "--cookies", str(self.cookie_file()))
-        self.assertEqual(err, "Errore: nessun sottotitolo e il sito fornisce solo il video senza audio\n")
 
     def test_cookies_file_missing_or_directory_rejected_before_ytdlp(self):
         missing = pathlib.Path(self.base.name) / "manca.txt"

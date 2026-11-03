@@ -5,7 +5,7 @@
 Prints the full transcript of one online video as clean, readable text, ready to paste
 somewhere else for analysis. It works with every site yt-dlp supports (YouTube, Instagram,
 TikTok, X, Facebook, Vimeo, Reddit…), but how much works **without logging in** depends on
-the site: see [Sites without login](#sites-without-login). The output has no timestamps, tags
+the site: see [Sites with and without login](#sites-with-and-without-login). The output has no timestamps, tags
 or repeated lines and is grouped into paragraphs. Nothing is left in the current directory: the
 subtitles and the audio are downloaded into a temporary directory that is always removed,
 also on errors. Messages are in Italian and go to stderr, so stdout holds only the transcript.
@@ -71,36 +71,50 @@ them are video only, it stops with an error instead of downloading a file withou
 Automatic captions in other languages are YouTube's machine translations and are never used,
 so a video in Spanish gives a Spanish transcript even with `--lang it,en`.
 
-### Sites without login
+### Sites with and without login
 
-Checked on 2026-10-21 with yt-dlp 2026.08.19, using the sample videos of yt-dlp's own tests:
+Checked live on 2026-11-03 with yt-dlp 2026.08.19, running the script on sample videos of
+yt-dlp's own tests, without login and with `--cookies` (a file exported from Safari):
 
-| Site | Without login |
-|---|---|
-| YouTube | Works: subtitles, otherwise audio |
-| Instagram | Metadata only: the files have no audio track, so there is nothing to transcribe. Carousels are recognized and rejected |
-| TikTok, Reddit, Vimeo | yt-dlp is asked to log in |
-| Facebook | yt-dlp cannot parse the page |
-| X | Depends on the post |
+| Site | Without login | With login (`--cookies`) |
+|---|---|---|
+| YouTube | Works: subtitles, otherwise audio (checked 2026-10-21) | Not needed |
+| Instagram | Depends on the reel: some have audio and are transcribed, others list only video formats and stop with an error. Carousels are rejected | Same result: the login only adds the duration, the reels without audio stay without audio |
+| Reddit | yt-dlp is asked to log in | Works: manual subtitles when the post has them, otherwise audio |
+| TikTok | yt-dlp is asked to log in | Not verified: the Safari profile had no TikTok session, so the login was refused |
+| X | Works on current posts (audio); old sample posts are gone | Same result |
+| Facebook | Depends on the video: one sample works (audio), another gives "Cannot parse data" | Same result |
+| Vimeo | yt-dlp is asked to log in | Not verified: no Vimeo session |
 
-So for Instagram, TikTok and the others `--cookies-from-browser` is needed: yt-dlp reads the
-session of a browser where you are already logged in, locally, and nothing is stored. The
-browser has to be one you use: a browser that was never opened has no cookies. Safari's
-cookies can be read only after giving the terminal app Full Disk Access in System Settings;
-Chrome-based browsers ask once for the keychain. Without access to the browser, use a
-[cookie file](#login-from-a-cookie-file). The login paths have not been verified live yet.
-When a site starts working without login in a newer yt-dlp, nothing needs to change.
+Each run took 1 to 17 seconds with the Whisper model already in the cache. The login is
+needed only for Reddit (and TikTok and Vimeo, not verified): `--cookies-from-browser` reads the
+session of a browser where you are logged in, locally, and nothing is stored. The browser has
+to be one you use: a browser that was never opened has no cookies. Safari's cookies can be
+read only after giving the terminal app Full Disk Access in System Settings; Chrome-based
+browsers ask once for the keychain. Without access to the browser, use a
+[cookie file](#login-from-a-cookie-file). When a site starts working without login in a newer
+yt-dlp, nothing needs to change.
 
 ### Login from a cookie file
 
-`--cookies FILE` passes a cookie file to yt-dlp instead of reading a browser, so it works
-without giving the terminal Full Disk Access for Safari. Export the cookies of the site once,
-while logged in, with a browser extension that writes the Netscape format (`cookies.txt`, the
-first line is `# Netscape HTTP Cookie File`); `~` and relative paths are accepted.
+`--cookies FILE` passes a cookie file in Netscape format (`cookies.txt`, the first line is
+`# Netscape HTTP Cookie File`) to yt-dlp instead of reading a browser; `~` and relative paths
+are accepted. yt-dlp itself can write the file, with no browser extension: give Full Disk
+Access to Terminal only, run once
+
+```bash
+yt-dlp --cookies-from-browser safari --cookies ~/Downloads/cookies.txt --skip-download "https://www.instagram.com/"
+```
+
+then remove the access again. The `Unsupported URL` error at the end is expected: the cookies
+are written anyway. A browser extension that exports `cookies.txt` works too.
 
 - The file is your session: anyone who has it is logged in as you. Keep it outside the
-  repository (`.gitignore` skips files named like `cookies.txt`, but not every name) and delete it when you no longer need it.
-- yt-dlp may rewrite the file at the end of a run with the updated cookies.
+  repository (`.gitignore` skips files named like `cookies.txt`, but not every name), make it
+  readable only by you (`chmod 600`) and delete it when you no longer need it. Exported from
+  a browser, it holds the sessions of **every** site, not only the social ones.
+- yt-dlp rewrites the file at the end of each run with the updated cookies (checked: the
+  permissions are kept).
 - When the session expires, the site asks for the login again: export a new file.
 - A file that is not in Netscape format gives an error before any download.
 
@@ -141,9 +155,12 @@ clear error while subtitles keep working.
   run, almost all of it the download. Whisper can invent text over long silences or music.
 - **The sites change often**: when subtitles or audio stop downloading, update yt-dlp first
   (`brew upgrade yt-dlp`).
-- Most social sites need a login (see [Sites without login](#sites-without-login)), and a
-  login-only video read through `--cookies-from-browser` uses your account: heavy use can make
-  the site rate-limit or flag it.
+- Some sites need a login (Reddit, TikTok, Vimeo: see
+  [Sites with and without login](#sites-with-and-without-login)), and a video read through
+  `--cookies-from-browser` or `--cookies` uses your account: heavy use can make the site
+  rate-limit or flag it.
+- Some Instagram reels have no audio track for yt-dlp, with or without a login: they cannot be
+  transcribed.
 - One video at a time: carousels and threads with several videos are rejected.
 - The text of a post (caption, description) is not included, only what is said.
 - The tests use a fake yt-dlp and a fake engine; the real paths were checked by hand.
