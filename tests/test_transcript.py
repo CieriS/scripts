@@ -278,6 +278,9 @@ class YtdlpErrors(unittest.TestCase):
             "ERROR: '/finto/cookies.txt' does not look like a Netscape format cookies file":
                 "il file di --cookies non è un file di cookie valido: esportalo in formato "
                 "Netscape (cookies.txt) dal browser in cui hai fatto l'accesso",
+            "ERROR: [TikTok] 7253412088251534594: Your IP address is blocked from accessing this post":
+                "il sito blocca questo video per la tua rete o il tuo paese, anche con il login "
+                "(succede su TikTok): yt-dlp non può scaricarlo",
             "ERROR: Unsupported URL: https://example.com/": "sito o indirizzo non supportato da yt-dlp",
             "ERROR: [twitter] 1: No video could be found in this tweet": "nel link non c'è nessun video",
             "ERROR: HTTP Error 429: Too Many Requests": "il sito sta limitando le richieste: riprova più tardi",

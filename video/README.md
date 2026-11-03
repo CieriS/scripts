@@ -81,13 +81,13 @@ yt-dlp's own tests, without login and with `--cookies` (a file exported from Saf
 | YouTube | Works: subtitles, otherwise audio (checked 2026-10-21) | Not needed |
 | Instagram | Depends on the reel: some have audio and are transcribed, others list only video formats and stop with an error. Carousels are rejected | Same result: the login only adds the duration, the reels without audio stay without audio |
 | Reddit | yt-dlp is asked to log in | Works: manual subtitles when the post has them, otherwise audio |
-| TikTok | yt-dlp is asked to log in | Not verified: the Safari profile had no TikTok session, so the login was refused |
+| TikTok | yt-dlp is asked to log in | Does not work: with a valid session all 5 samples gave "Your IP address is blocked from accessing this post". Known limitation, not worked around |
 | X | Works on current posts (audio); old sample posts are gone | Same result |
 | Facebook | Depends on the video: one sample works (audio), another gives "Cannot parse data" | Same result |
-| Vimeo | yt-dlp is asked to log in | Not verified: no Vimeo session |
+| Vimeo | yt-dlp is asked to log in | Not verified: not used, so left out on purpose (check it when a Vimeo video is needed) |
 
 Each run took 1 to 17 seconds with the Whisper model already in the cache. The login is
-needed only for Reddit (and TikTok and Vimeo, not verified): `--cookies-from-browser` reads the
+needed only for Reddit (and Vimeo, not verified): `--cookies-from-browser` reads the
 session of a browser where you are logged in, locally, and nothing is stored. The browser has
 to be one you use: a browser that was never opened has no cookies. Safari's cookies can be
 read only after giving the terminal app Full Disk Access in System Settings; Chrome-based
@@ -155,12 +155,16 @@ clear error while subtitles keep working.
   run, almost all of it the download. Whisper can invent text over long silences or music.
 - **The sites change often**: when subtitles or audio stop downloading, update yt-dlp first
   (`brew upgrade yt-dlp`).
-- Some sites need a login (Reddit, TikTok, Vimeo: see
+- Some sites need a login (Reddit, Vimeo: see
   [Sites with and without login](#sites-with-and-without-login)), and a video read through
   `--cookies-from-browser` or `--cookies` uses your account: heavy use can make the site
   rate-limit or flag it.
 - Some Instagram reels have no audio track for yt-dlp, with or without a login: they cannot be
   transcribed.
+- **TikTok** cannot be transcribed: without login it asks for one, with a valid session it
+  answers that the IP address is blocked (5 sample videos, 2026-11-03). A cookie file exported
+  without a TikTok login (no `sessionid` cookie) gives the login error again. Check again
+  after `brew upgrade yt-dlp`; working around the block (proxy, VPN) is out of scope.
 - One video at a time: carousels and threads with several videos are rejected.
 - The text of a post (caption, description) is not included, only what is said.
 - The tests use a fake yt-dlp and a fake engine; the real paths were checked by hand.

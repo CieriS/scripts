@@ -295,6 +295,11 @@ def ytdlp_error_message(stderr):
             "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza), usa un "
             "altro browser o esporta i cookie in un file per --cookies"
         )
+    if "ip address is blocked" in lowered:
+        return (
+            "il sito blocca questo video per la tua rete o il tuo paese, anche con il login "
+            "(succede su TikTok): yt-dlp non può scaricarlo"
+        )
     if "private video" in lowered:
         return "il video è privato"
     if any(hint in lowered for hint in LOGIN_HINTS):
