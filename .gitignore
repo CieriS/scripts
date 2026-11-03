@@ -1,3 +1,7 @@
 # Screenshot personali dei follower: dati privati, mai su GitHub
 instagram/screenshots/
 __pycache__/
+
+# Exported login cookies (transcript.py --cookies): never commit a session
+cookies.txt
+*cookies*.txt

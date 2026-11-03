@@ -6,14 +6,14 @@ Prints the full transcript of one online video as clean, readable text, ready to
 somewhere else for analysis. It works with every site yt-dlp supports (YouTube, Instagram,
 TikTok, X, Facebook, Vimeo, Reddit…), but how much works **without logging in** depends on
 the site: see [Sites without login](#sites-without-login). The output has no timestamps, tags
-or repeated lines and is grouped into paragraphs. no timestamps, tags
-or repeated lines, grouped into paragraphs. Nothing is left in the current directory: the
+or repeated lines and is grouped into paragraphs. Nothing is left in the current directory: the
 subtitles and the audio are downloaded into a temporary directory that is always removed,
 also on errors. Messages are in Italian and go to stderr, so stdout holds only the transcript.
 
 ```bash
 uv run video/transcript.py "https://youtu.be/VIDEO_ID" | pbcopy
 uv run video/transcript.py "https://www.instagram.com/reel/ID/" --cookies-from-browser chrome
+uv run video/transcript.py "https://www.tiktok.com/@user/video/ID" --cookies ~/cookies.txt
 uv run video/transcript.py URL --lang en,it -o transcript.txt
 uv run video/transcript.py URL --timestamps
 ```
@@ -46,13 +46,14 @@ First paragraph…
 | `--timestamps` | off | Start each paragraph with `[mm:ss]` (or `[h:mm:ss]`) |
 | `--model REPO` | `mlx-community/whisper-large-v3-turbo` | mlx-whisper model (Hugging Face repository) of the local fallback, e.g. `mlx-community/whisper-small-mlx` for a faster, less accurate run |
 | `--no-fallback` | off | Fail instead of downloading and transcribing the audio |
-| `--cookies-from-browser NAME` | off | Use the login of this browser (`chrome`, `brave`, `firefox`, `safari`…) for sites that require it. Without it no login is ever used |
+| `--cookies-from-browser NAME` | off | Use the login of this browser (`chrome`, `brave`, `firefox`, `safari`…) for sites that require it. Without it (or `--cookies`) no login is ever used |
+| `--cookies FILE` | off | Use the login stored in a cookie file in Netscape format (`cookies.txt`), see [Login from a cookie file](#login-from-a-cookie-file). Cannot be combined with `--cookies-from-browser` |
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Transcript printed or written |
 | `1` | Video private, unavailable, behind a login or with several videos; site not supported; no subtitles and no audio, or the local transcription failed or was disabled; empty transcript |
-| `2` | Wrong arguments, not an `http(s)` URL, or a YouTube URL that is not a single video |
+| `2` | Wrong arguments (also a `--cookies` file that does not exist, or both login options), not an `http(s)` URL, or a YouTube URL that is not a single video |
 | `3` | `yt-dlp` not found |
 
 ### How the source is chosen
@@ -86,8 +87,27 @@ So for Instagram, TikTok and the others `--cookies-from-browser` is needed: yt-d
 session of a browser where you are already logged in, locally, and nothing is stored. The
 browser has to be one you use: a browser that was never opened has no cookies. Safari's
 cookies can be read only after giving the terminal app Full Disk Access in System Settings;
-Chrome-based browsers ask once for the keychain. The login path has not been verified live
-yet. When a site starts working without login in a newer yt-dlp, nothing needs to change.
+Chrome-based browsers ask once for the keychain. Without access to the browser, use a
+[cookie file](#login-from-a-cookie-file). The login paths have not been verified live yet.
+When a site starts working without login in a newer yt-dlp, nothing needs to change.
+
+### Login from a cookie file
+
+`--cookies FILE` passes a cookie file to yt-dlp instead of reading a browser, so it works
+without giving the terminal Full Disk Access for Safari. Export the cookies of the site once,
+while logged in, with a browser extension that writes the Netscape format (`cookies.txt`, the
+first line is `# Netscape HTTP Cookie File`); `~` and relative paths are accepted.
+
+- The file is your session: anyone who has it is logged in as you. Keep it outside the
+  repository (`.gitignore` skips files named like `cookies.txt`, but not every name) and delete it when you no longer need it.
+- yt-dlp may rewrite the file at the end of a run with the updated cookies.
+- When the session expires, the site asks for the login again: export a new file.
+- A file that is not in Netscape format gives an error before any download.
+
+Why a file next to `--cookies-from-browser`: Safari is the only browser logged in to the social
+sites on this Mac, and reading its cookies needs Full Disk Access for the terminal app, which
+also opens every other protected file to it. A file exported once gives the same login without
+that access (decided in #13, 2026-11-03).
 
 ### Text cleanup
 

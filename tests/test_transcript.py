@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import tempfile
 import unittest
@@ -250,7 +251,7 @@ class ChooseSource(unittest.TestCase):
 LOGIN = (
     "il sito chiede l'accesso per questo video (login, età o membri); se lo vedi nel "
     "browser, riprova con --cookies-from-browser e il nome del browser in cui hai "
-    "fatto l'accesso (chrome, brave, firefox, safari...)"
+    "fatto l'accesso (chrome, brave, firefox, safari...) o con --cookies e un file di cookie"
 )
 
 
@@ -271,8 +272,12 @@ class YtdlpErrors(unittest.TestCase):
                 "che sia il browser in cui hai fatto l'accesso al sito",
             "ERROR: [Errno 1] Operation not permitted: '/finto/Cookies.binarycookies'":
                 "macOS non permette di leggere i cookie di Safari: dai l'accesso completo al disco "
-                "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza) o usa un "
-                "altro browser",
+                "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza), usa un "
+                "altro browser o esporta i cookie in un file per --cookies",
+            "WARNING: skipping cookie file entry due to invalid length 1: 'x'\n"
+            "ERROR: '/finto/cookies.txt' does not look like a Netscape format cookies file":
+                "il file di --cookies non è un file di cookie valido: esportalo in formato "
+                "Netscape (cookies.txt) dal browser in cui hai fatto l'accesso",
             "ERROR: Unsupported URL: https://example.com/": "sito o indirizzo non supportato da yt-dlp",
             "ERROR: [twitter] 1: No video could be found in this tweet": "nel link non c'è nessun video",
             "ERROR: HTTP Error 429: Too Many Requests": "il sito sta limitando le richieste: riprova più tardi",
@@ -472,6 +477,7 @@ class Main(unittest.TestCase):
         self.assertEqual((code, out), (1, ""))
         self.assertIn("solo il video senza audio", err)
         self.assertIn("--cookies-from-browser", err)
+        self.assertIn("--cookies e un file di cookie", err)
         self.assertEqual(len(fake.calls), 1)
         self.assert_tmp_removed()
 
@@ -501,6 +507,65 @@ class Main(unittest.TestCase):
             i = call.index("--cookies-from-browser")
             self.assertEqual(call[i + 1], "firefox")
             self.assertEqual(call[-1], URL)
+
+    def cookie_file(self, name="cookies.txt"):
+        path = pathlib.Path(self.base.name).parent / f"{pathlib.Path(self.base.name).name}-{name}"
+        path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        self.addCleanup(path.unlink, missing_ok=True)
+        return path
+
+    def test_cookies_file_passed_to_every_call(self):
+        path = self.cookie_file()
+        fake = FakeYtdlp(INFO)
+        local = mock.Mock(return_value=[(0.0, "Testo.")])
+        code, _, _ = self.run_main(fake, "--cookies", str(path), transcribe=local)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 2)
+        for call in fake.calls:
+            i = call.index("--cookies")
+            self.assertEqual(call[i + 1], str(path.resolve()))
+            self.assertNotIn("--cookies-from-browser", call)
+            self.assertEqual(call[-1], URL)
+
+    def test_cookies_file_relative_and_home_paths_made_absolute(self):
+        path = self.cookie_file()
+        with mock.patch.dict("os.environ", {"HOME": str(path.parent)}):
+            args = tr.parse_args([URL, "--cookies", f"~/{path.name}"])
+        self.assertEqual(args.cookies, str(path.resolve()))
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(path.parent)
+        self.assertEqual(tr.parse_args([URL, "--cookies", path.name]).cookies, str(path.resolve()))
+
+    def test_without_cookies_hint_on_audio_error(self):
+        fake = FakeYtdlp({**INFO, "formats": [{"acodec": "none"}]})
+        _, _, err = self.run_main(fake, "--cookies", str(self.cookie_file()))
+        self.assertEqual(err, "Errore: nessun sottotitolo e il sito fornisce solo il video senza audio\n")
+
+    def test_cookies_file_missing_or_directory_rejected_before_ytdlp(self):
+        missing = pathlib.Path(self.base.name) / "manca.txt"
+        for value in (str(missing), self.base.name):
+            with self.subTest(value=value):
+                fake = FakeYtdlp(INFO)
+                err = io.StringIO()
+                with mock.patch.object(tr, "run_ytdlp", fake), contextlib.redirect_stderr(err), \
+                        self.assertRaises(SystemExit) as ctx:
+                    tr.main([URL, "--cookies", value])
+                self.assertEqual(ctx.exception.code, tr.EXIT_USAGE)
+                self.assertIn("--cookies: file non trovato", err.getvalue())
+                self.assertEqual(fake.calls, [])
+
+    def test_cookies_and_browser_are_exclusive(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
+            tr.parse_args([URL, "--cookies", "x.txt", "--cookies-from-browser", "safari"])
+        self.assertEqual(ctx.exception.code, tr.EXIT_USAGE)
+        self.assertIn("not allowed with", err.getvalue())
+
+    def test_login_options(self):
+        self.assertEqual(tr.login_options(), [])
+        self.assertEqual(tr.login_options("chrome"), ["--cookies-from-browser", "chrome"])
+        self.assertEqual(tr.login_options(cookies="/c.txt"), ["--cookies", "/c.txt"])
 
     def test_lang_option(self):
         fake = FakeYtdlp({**INFO, "subtitles": {"it": [], "en": []}})

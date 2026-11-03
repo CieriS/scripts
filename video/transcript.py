@@ -7,14 +7,14 @@
 
 Usage:
     uv run video/transcript.py <url> [--lang it,en] [-o FILE] [--timestamps]
-        [--model REPO] [--no-fallback] [--cookies-from-browser BROWSER]
+        [--model REPO] [--no-fallback] [--cookies-from-browser BROWSER | --cookies FILE]
 
 Works with any site yt-dlp (Homebrew binary) supports: YouTube, Instagram, TikTok, X,
 Facebook, Vimeo, Reddit... Subtitles are read without downloading the video: manual subtitles
 first, then automatic captions in the video's original language. When a video has none, only
 the audio is downloaded and transcribed locally with mlx-whisper (Apple Silicon only; the
-model is downloaded on the first run). No login is used unless --cookies-from-browser is
-given. One video at a time: posts with several videos are rejected. Temporary files live in a
+model is downloaded on the first run). No login is used unless --cookies-from-browser or
+--cookies is given. One video at a time: posts with several videos are rejected. Temporary files live in a
 temporary directory that is always removed. Output messages are in Italian.
 """
 
@@ -278,11 +278,16 @@ def ytdlp_error_message(stderr):
             "non trovo i cookie di quel browser: controlla il nome in --cookies-from-browser e "
             "che sia il browser in cui hai fatto l'accesso al sito"
         )
+    if "netscape format" in lowered:
+        return (
+            "il file di --cookies non è un file di cookie valido: esportalo in formato Netscape "
+            "(cookies.txt) dal browser in cui hai fatto l'accesso"
+        )
     if "operation not permitted" in lowered and "cookies" in lowered:
         return (
             "macOS non permette di leggere i cookie di Safari: dai l'accesso completo al disco "
-            "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza) o usa un "
-            "altro browser"
+            "all'app del terminale (Impostazioni di Sistema > Privacy e sicurezza), usa un "
+            "altro browser o esporta i cookie in un file per --cookies"
         )
     if "private video" in lowered:
         return "il video è privato"
@@ -290,7 +295,7 @@ def ytdlp_error_message(stderr):
         return (
             "il sito chiede l'accesso per questo video (login, età o membri); se lo vedi nel "
             "browser, riprova con --cookies-from-browser e il nome del browser in cui hai "
-            "fatto l'accesso (chrome, brave, firefox, safari...)"
+            "fatto l'accesso (chrome, brave, firefox, safari...) o con --cookies e un file di cookie"
         )
     if "unsupported url" in lowered:
         return "sito o indirizzo non supportato da yt-dlp"
@@ -370,12 +375,21 @@ def transcribe_local(audio, model, language):
     return [(seg["start"], clean_text(seg["text"])) for seg in result.get("segments", [])]
 
 
-def transcript(url, langs, timestamps, model, fallback, cookies_from_browser=None):
-    """Return the full text (header + paragraphs) for a video."""
+def login_options(cookies_from_browser=None, cookies=None):
+    """yt-dlp options for the login; empty when none was asked for."""
+    if cookies_from_browser:
+        return ["--cookies-from-browser", cookies_from_browser]
+    if cookies:
+        return ["--cookies", cookies]
+    return []
+
+
+def transcript(url, langs, timestamps, model, fallback, options=()):
+    """Return the full text (header + paragraphs) for a video; `options` holds the login."""
     url = normalize_url(url)
     if shutil.which("yt-dlp") is None:
         raise TranscriptError("yt-dlp non trovato: installalo con brew install yt-dlp", EXIT_NO_YTDLP)
-    options = ["--cookies-from-browser", cookies_from_browser] if cookies_from_browser else []
+    options = list(options)
     with tempfile.TemporaryDirectory(prefix="video-transcript-") as tmp:
         info = fetch_info(url, options)
         source = choose_source(info, langs)
@@ -387,9 +401,9 @@ def transcript(url, langs, timestamps, model, fallback, cookies_from_browser=Non
             if not fallback:
                 raise TranscriptError("nessun sottotitolo disponibile e trascrizione locale disattivata")
             if not has_audio(info):
-                hint = "" if cookies_from_browser else (
+                hint = "" if options else (
                     " (succede su Instagram senza login): riprova con --cookies-from-browser e il "
-                    "nome del browser in cui hai fatto l'accesso"
+                    "nome del browser in cui hai fatto l'accesso, o con --cookies e un file di cookie"
                 )
                 raise TranscriptError(f"nessun sottotitolo e il sito fornisce solo il video senza audio{hint}")
             print(f"Nessun sottotitolo: scarico l'audio e lo trascrivo con {model}...", file=sys.stderr)
@@ -417,6 +431,7 @@ def parse_args(argv):
   uv run video/transcript.py URL --no-fallback
   uv run video/transcript.py URL --model mlx-community/whisper-small-mlx
   uv run video/transcript.py URL --cookies-from-browser chrome   # solo se il sito chiede il login
+  uv run video/transcript.py URL --cookies ~/cookies.txt         # login da un file esportato
 
 fonte: sottotitoli manuali > automatici (lingua originale) > trascrizione locale.
 exit code: 0 ok, 1 video non disponibile o trascrizione fallita, 2 argomenti o URL non
@@ -437,12 +452,23 @@ validi, 3 yt-dlp assente.""",
         "--no-fallback", action="store_true",
         help="non trascrivere l'audio in locale quando mancano i sottotitoli",
     )
-    parser.add_argument(
+    login = parser.add_mutually_exclusive_group()
+    login.add_argument(
         "--cookies-from-browser", metavar="BROWSER",
         help="usa la sessione di questo browser (chrome, safari, firefox...) per i video che "
         "richiedono il login; senza, nessun accesso",
     )
+    login.add_argument(
+        "--cookies", metavar="FILE",
+        help="usa i cookie di questo file in formato Netscape (cookies.txt) per i video che "
+        "richiedono il login; yt-dlp può riscriverlo con i cookie aggiornati",
+    )
     args = parser.parse_args(argv)
+    if args.cookies is not None:
+        cookies = Path(args.cookies).expanduser()
+        if not cookies.is_file():
+            parser.error(f"--cookies: file non trovato: {args.cookies}")
+        args.cookies = str(cookies.resolve())
     args.langs = [lang.strip() for lang in args.lang.split(",") if lang.strip()]
     if not args.langs:
         parser.error("--lang: serve almeno una lingua")
@@ -454,7 +480,7 @@ def main(argv=None):
     try:
         text = transcript(
             args.url, args.langs, args.timestamps, args.model, not args.no_fallback,
-            args.cookies_from_browser,
+            login_options(args.cookies_from_browser, args.cookies),
         )
     except TranscriptError as exc:
         print(f"Errore: {exc}", file=sys.stderr)
