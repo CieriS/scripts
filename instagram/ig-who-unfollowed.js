@@ -33,7 +33,9 @@
  * AFFIDABILITÀ — Instagram a volte restituisce liste più corte del vero. Se
  * gli passi i numeri del profilo, lo scan li confronta con le liste lette: se mancano
  * account lo dice ("liste incomplete") e segna lo snapshot, così diff() avvisa
- * che il confronto può contenere falsi unfollow. Gli snapshot sono separati
+ * che il confronto può contenere falsi unfollow. Lo stesso avviso vale quando
+ * gli account spariti dallo scan precedente non sono stati verificati tutti
+ * (troppi, o Instagram ha rifiutato i controlli). Gli snapshot sono separati
  * per account: cambiando account nello stesso browser non si mescolano.
  *
  * CADENZA — diff() confronta con lo scan precedente. Uno scan a settimana è
@@ -124,7 +126,8 @@
    * RETE — solo GET. Nessun metodo, nessun body, nessun csrftoken.
    * ====================================================================== */
   // soft: per le verifiche facoltative. Un solo tentativo, nessuna attesa:
-  // qualunque errore restituisce null. I segnali di blocco fermano comunque.
+  // un errore restituisce null, tranne HTTP 404 ({ notFound: true }: l'account
+  // non esiste più, non è un rifiuto). I segnali di blocco fermano comunque.
   async function igFetch(path, { soft = false } = {}) {
     const url = ORIGIN + path;
 
@@ -162,7 +165,7 @@
           `Aspetta qualche ora, usa l'app normalmente, poi riprova.`
         );
 
-      if (soft && !res.ok) return null;
+      if (soft && !res.ok) return res.status === 404 ? { notFound: true } : null;
 
       if (res.status === 401 || res.status === 403)
         throw new FatalError(`HTTP ${res.status}: sessione scaduta. Ricarica e rifai login.`);
@@ -278,6 +281,7 @@
    * nello snapshot precedente e ora manca viene controllato uno per uno con
    * friendships/show (una GET, la stessa della pagina profilo): se il legame
    * esiste ancora l'account torna nella lista. Modifica le liste sul posto.
+   * unverified: quante assenze sono rimaste senza controllo (0 = tutte certe).
    */
   async function verifyMissing(prev, following, followers) {
     if (!prev) return { restored: 0, unverified: 0 };
@@ -300,13 +304,16 @@
       const id = ids[i];
       ui.status(`verifica ${i + 1}/${ids.length}`);
       const rel = await igFetch(`/api/v1/friendships/show/${id}/`, { soft: true });
-      if (typeof rel?.following !== "boolean" || typeof rel?.followed_by !== "boolean") {
-        warn(`verifica interrotta (Instagram non risponde): ${ids.length - i} account non verificati, ` +
-             `il confronto può contenere falsi positivi.`);
-        return { restored, unverified: ids.length - i };
+      // Account chiuso: l'assenza è vera, e gli altri vanno comunque controllati.
+      if (!rel?.notFound) {
+        if (typeof rel?.following !== "boolean" || typeof rel?.followed_by !== "boolean") {
+          warn(`verifica interrotta (Instagram non risponde): ${ids.length - i} account non verificati, ` +
+               `il confronto può contenere falsi positivi.`);
+          return { restored, unverified: ids.length - i };
+        }
+        if (rel.following && missFg.includes(id)) { following.push(blank(id)); restored++; }
+        if (rel.followed_by && missFr.includes(id)) { followers.push(blank(id)); restored++; }
       }
-      if (rel.following && missFg.includes(id)) { following.push(blank(id)); restored++; }
-      if (rel.followed_by && missFr.includes(id)) { followers.push(blank(id)); restored++; }
       if (i < ids.length - 1) await waitFor(rand(CONFIG.DELAY_MIN, CONFIG.DELAY_MAX), "verifica");
     }
     if (restored) log(`${restored} account omessi da Instagram nelle liste e rimessi dopo la verifica.`);
@@ -321,7 +328,7 @@
   const mySnaps = (uid = getCookie("ds_user_id")) => store.get(K_SNAPS, []).filter(isMine(uid));
 
   /** Salva lo snapshot in forma compatta, per non saturare localStorage. */
-  function pushSnapshot(uid, t, following, followers, partial) {
+  function pushSnapshot(uid, t, following, followers, partial, unverified) {
     const compact = (list) => list.map((u) => [u.id, u.username]);
     const all = store.get(K_SNAPS, []);
     const mine = all.filter(isMine(uid));
@@ -332,6 +339,9 @@
     // precedente, che poteva salvare liste mescolate o troncate.
     const snap = { v: SNAP_VERSION, t, u: uid, fg: compact(following), fr: compact(followers) };
     if (partial) snap.p = 1; // liste incomplete: il confronto con questo scan è inaffidabile
+    // q: assenze rispetto allo scan precedente rimaste senza verifica. 0 = tutte
+    // controllate; campo assente = snapshot di prima che la verifica esistesse.
+    snap.q = unverified;
     mine.push(snap);
     while (mine.length > CONFIG.MAX_HISTORY) mine.shift();
 
@@ -398,13 +408,13 @@
       const following = await fetchList(userId, "following", onProgress);
       await waitFor(rand(CONFIG.LIST_GAP_MIN, CONFIG.LIST_GAP_MAX), "");
       const followers = await fetchList(userId, "followers", onProgress);
-      await verifyMissing(mySnaps(userId).at(-1), following, followers);
+      const { unverified } = await verifyMissing(mySnaps(userId).at(-1), following, followers);
 
       const partial = !!expected &&
         (isShort(following.length, expected.following) || isShort(followers.length, expected.followers));
 
       const scannedAt = new Date().toISOString();
-      const { saved, count } = pushSnapshot(userId, scannedAt, following, followers, partial);
+      const { saved, count } = pushSnapshot(userId, scannedAt, following, followers, partial, unverified);
       LAST = buildResult(scannedAt, following, followers, { expected, partial });
       OPENED.clear();
 
@@ -432,6 +442,8 @@
   /**
    * earlier: snapshot precedenti ad A. Chi risulta "nuovo" in B ma compariva
    * già in uno di quelli era solo stato omesso da Instagram in A: "ricomparso".
+   * Vale solo se le assenze di A non erano state verificate: dopo uno scan
+   * verificato chi torna se n'era andato davvero, ed è un cambiamento vero.
    */
   function computeDiff(A, B, earlier = []) {
     const nameOf = new Map([...A.fg, ...A.fr, ...B.fg, ...B.fr]);
@@ -457,16 +469,18 @@
       else unfollowedYou.push(mk(id));
     }
 
-    const seenFr = new Set(earlier.flatMap((s) => s.fr.map((p) => p[0])));
-    const seenFg = new Set(earlier.flatMap((s) => s.fg.map((p) => p[0])));
+    const past = A.q === 0 && !A.p ? [] : earlier;
+    const seenFr = new Set(past.flatMap((s) => s.fr.map((p) => p[0])));
+    const seenFg = new Set(past.flatMap((s) => s.fg.map((p) => p[0])));
     const newFr = [...bFr].filter((id) => !aFr.has(id));
     const newFg = [...bFg].filter((id) => !aFg.has(id));
 
     return {
       from: A.t,
       to: B.t,
-      // Uno dei due scan era incompleto: chi manca dalla lista sembra un unfollow.
-      unreliable: !!(A.p || B.p),
+      // Uno dei due scan era incompleto, o le sue assenze non sono state
+      // verificate: chi manca dalla lista sembra un unfollow.
+      unreliable: !!(A.p || B.p || A.q || B.q),
       // Uno dei due viene da una versione precedente dello script: stesse conseguenze.
       legacy: A.v !== SNAP_VERSION || B.v !== SNAP_VERSION,
       unfollowedYou,
@@ -513,7 +527,7 @@
 
     console.group(`%c[IU] Confronto  ${fmtDate(A.t)}  →  ${fmtDate(B.t)}`, "color:#4ea1ff;font-weight:bold");
     if (res.unreliable)
-      warn("⚠️ uno dei due scan era incompleto: questo confronto può contenere falsi \"ti hanno tolto il follow\".");
+      warn("⚠️ uno dei due scan era incompleto o non verificato: questo confronto può contenere falsi \"ti hanno tolto il follow\".");
     if (res.legacy)
       warn("⚠️ lo snapshot precedente è stato salvato da una versione vecchia dello script, che " +
            "poteva registrare liste incomplete o mescolate: \"nuovi follower\" e \"hai iniziato a " +
@@ -658,7 +672,7 @@ a{color:var(--acc);text-decoration:none;font-weight:600}a:hover{text-decoration:
 <h1>Chi non ti segue</h1>
 <div class="sub">Scan del ${escapeHtml(fmtDate(r.scannedAt))}${d ? ` · confronto dal ${escapeHtml(fmtDate(d.from))}` : ""}</div>
 ${d?.legacy ? `<div class="sub">⚠️ Il confronto usa uno snapshot di una versione vecchia dello script: i nuovi follower possono includere account di vecchia data.</div>` : ""}
-${r.partial || d?.unreliable ? `<div class="sub">⚠️ Liste incomplete in questo scan o nel precedente: l'elenco può contenere persone che in realtà ti seguono.</div>` : ""}
+${r.partial || d?.unreliable ? `<div class="sub">⚠️ Liste incomplete o non verificate in questo scan o nel precedente: l'elenco può contenere persone che in realtà ti seguono.</div>` : ""}
 <div class="stats">
 <div class="stat"><b>${r.counts.following}</b><span>segui</span></div>
 <div class="stat"><b>${r.counts.followers}</b><span>ti seguono</span></div>
@@ -727,7 +741,7 @@ Clicca un profilo per aprirlo e fare unfollow a mano.</footer>
     if (!s.length) return log("nessuno snapshot");
     console.table(s.map((x, i) => ({
       "#": i - s.length, quando: fmtDate(x.t), segui: x.fg.length, "ti seguono": x.fr.length,
-      completo: x.p ? "no" : "sì",
+      completo: x.p || x.q ? "no" : "sì",
       versione: x.v === SNAP_VERSION ? "attuale" : "vecchia",
     })));
     log("usa IU.diff(-3,-1) per confrontare snapshot non adiacenti");

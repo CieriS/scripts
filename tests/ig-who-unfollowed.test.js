@@ -747,3 +747,97 @@ test("load message shows how to pass the profile numbers", () => {
   const page = loadScript();
   assert.ok(page.said("log", /IU\.scan\(\{ follower: N, seguiti: N \}\) con i numeri del tuo profilo/));
 });
+
+/* ------------------------------------------- unverified scans, re-follows --- */
+
+test("diff: a scan whose missing accounts were too many to check is marked as unreliable", async () => {
+  // No profile counters given: the only sign of a truncated list is the skipped verification.
+  const instagram = new FakeInstagram({ following: range(1, 60), followers: range(1, 60) });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  instagram.override = (url) =>
+    url.pathname.includes("/followers/")
+      ? { status: 200, body: { users: range(1, 10), next_max_id: null } }
+      : null;
+  await page.IU.scan();
+  const d = page.IU.diff();
+
+  assert.equal(d.unfollowedYou.length, 50);
+  assert.equal(d.unreliable, true);
+  assert.ok(page.said("warn", /uno dei due scan era incompleto o non verificato/));
+  page.IU.history();
+  assert.deepEqual(page.tables.at(-1).map((r) => r.completo), ["sì", "no"]);
+});
+
+test("diff: a scan whose checks Instagram refused is marked as unreliable", async () => {
+  const instagram = new FakeInstagram({ following: [user(1), user(2)], followers: [user(1)] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  instagram.hidden = new Set([1, 2]);
+  instagram.override = (url) => (url.pathname.includes("/show/") ? { status: 429, body: {} } : null);
+  await page.IU.scan();
+
+  assert.equal(page.IU.diff().unreliable, true);
+});
+
+test("diff: a fully checked scan is not marked as unreliable", async () => {
+  const instagram = new FakeInstagram({ following: [user(1), user(2)], followers: [user(1)] });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  instagram.hidden = new Set([1]);
+  await page.IU.scan();
+
+  assert.equal(page.IU.diff().unreliable, false);
+});
+
+test("verify: an account that no longer exists does not stop the checks of the others", async () => {
+  const instagram = new FakeInstagram({
+    following: [user(1), user(2), user(3)],
+    followers: [user(1), user(2), user(3)],
+  });
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  // user1 closed the account: gone from the lists, its check answers 404.
+  // user2 and user3 are only left out of the lists by Instagram.
+  Object.assign(instagram, { following: [user(2), user(3)], followers: [user(2), user(3)] });
+  instagram.hidden = new Set([2, 3]);
+  instagram.override = (url) => (url.pathname.endsWith("/show/1/") ? { status: 404, body: {} } : null);
+  const result = await page.IU.scan();
+  const d = page.IU.diff();
+
+  assert.equal(result.counts.followers, 2);
+  assert.deepEqual(names(d.vanished), ["user1"]);
+  assert.deepEqual(names(d.unfollowedYou), []);
+  assert.equal(d.unreliable, false);
+  assert.equal(page.requests.filter((r) => r.url.includes("/show/")).length, 3);
+});
+
+test("diff: someone who left and came back after a checked scan is a new follower, not an omission", async () => {
+  // q: 0 = every account missing from the middle scan was checked: user2 had really left.
+  const snap = (t, ids) => ({ t, u: "100", v: 2, q: 0, fg: ids.map((i) => [String(i), `user${i}`]), fr: ids.map((i) => [String(i), `user${i}`]) });
+  const storage = new Map([["__iu_snaps_v2", JSON.stringify([
+    snap("2026-01-01T10:00:00.000Z", [1, 2]),
+    snap("2026-01-02T10:00:00.000Z", [1]),
+    snap("2026-01-03T10:00:00.000Z", [1, 2]),
+  ])]]);
+  const page = loadScript({ storage });
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.newFollowers), ["user2"]);
+  assert.deepEqual(names(d.youFollowed), ["user2"]);
+  assert.deepEqual(names(d.reappeared), []);
+});
+
+test("diff: after an unchecked scan, accounts that come back are still treated as omissions", async () => {
+  const snap = (t, ids, q) => ({ t, u: "100", v: 2, q, fg: [], fr: ids.map((i) => [String(i), `user${i}`]) });
+  const storage = new Map([["__iu_snaps_v2", JSON.stringify([
+    snap("2026-01-01T10:00:00.000Z", [1, 2], 0),
+    snap("2026-01-02T10:00:00.000Z", [1], 1),
+    snap("2026-01-03T10:00:00.000Z", [1, 2], 0),
+  ])]]);
+  const page = loadScript({ storage });
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.newFollowers), []);
+  assert.deepEqual(names(d.reappeared), ["user2"]);
+});

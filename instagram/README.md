@@ -67,12 +67,21 @@ follows. Two checks prevent that:
 
 - **After each scan**, every account that was in the previous snapshot and is now missing is
   checked one by one with the same read-only request the profile page makes. If the
-  relationship still exists the account is put back. With more than 30 missing accounts the
-  check is skipped (that is a truncated list, not a few gaps) and the comparison is flagged.
-  If Instagram refuses a check, the scan stops checking, completes, and says how many accounts
-  are unverified.
-- **In `IU.diff()`**, an account that is "new" but already appeared in an older snapshot was
-  only missing from the previous one: it is counted as reappeared and not listed as new.
+  relationship still exists the account is put back. An account that no longer exists (the
+  request answers HTTP 404) is a real absence, and the checks go on with the others. With
+  more than 30 missing accounts the check is skipped (that is a truncated list, not a few
+  gaps). If Instagram refuses a check, the scan stops checking, completes, and says how many
+  accounts are unverified. In both cases the snapshot is marked as unverified: `history()`
+  shows it as not complete and any `diff()` that uses it warns about false unfollows, also
+  after a reload and without profile numbers.
+- **In `IU.diff()`**, an account that is "new" but already appeared in an older snapshot is
+  counted as reappeared and not listed as new, but only when the absences of the previous
+  snapshot were not all checked (unverified, incomplete, or saved before the checks existed).
+  After a fully checked scan the account had really left: coming back is a new follower or a
+  new follow.
+
+The first scan has nothing to compare with, so nothing is checked: an account Instagram leaves
+out of the followers list is reported as not following back until a later scan lists it.
 
 ### Snapshots from an older version
 
@@ -98,7 +107,8 @@ a list is too short:
 
 - the scan and `report()` print "liste incomplete" with the numbers read and expected;
 - the snapshot is marked, `history()` shows it as not complete, and any `diff()` that uses it
-  warns that it may contain false unfollows.
+  warns that it may contain false unfollows. Without the numbers a truncated list is still
+  caught when more than 30 accounts are missing since the previous scan (see above).
 
 Wait a few hours and scan again. The script does not ask Instagram for these numbers: the
 endpoint that returns them answers HTTP 429 to the web session every time.
