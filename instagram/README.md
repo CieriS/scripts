@@ -49,13 +49,15 @@ Comments and console messages are in Italian.
 | In `IU.diff()` | Meaning |
 |---|---|
 | Ti hanno tolto il follow | Was among your followers, no longer is |
-| Spariti | Gone from your followers *and* from the accounts you follow: usually a closed account or a block |
+| Spariti | Gone from your followers *and* from the accounts you follow, or found closed by the check after the scan: usually a closed account or a block |
 | Nuovi follower | Follows you now, did not at the previous scan |
 | Hai smesso / iniziato a seguire | Your own changes |
 
 Things the script cannot know:
 
-- An account you did not follow that closes or blocks you looks the same as an unfollow.
+- An account you did not follow that closes or blocks you looks the same as an unfollow, and
+  one you followed that did not follow you looks like your own unfollow, unless the check
+  after the scan finds it closed (see below): then it is listed under "spariti".
 - An account you unfollowed that also unfollowed you is listed under "spariti".
 
 ### Accounts Instagram leaves out
@@ -68,7 +70,8 @@ follows. Two checks prevent that:
 - **After each scan**, every account that was in the previous snapshot and is now missing is
   checked one by one with the same read-only request the profile page makes. If the
   relationship still exists the account is put back. An account that no longer exists (the
-  request answers HTTP 404) is a real absence, and the checks go on with the others. With
+  request answers HTTP 404, seen live) is a real absence: it is saved in the snapshot as
+  closed and listed under "spariti", and the checks go on with the others. With
   more than 30 missing accounts the check is skipped (that is a truncated list, not a few
   gaps). If Instagram refuses a check, the scan stops checking, completes, and says how many
   accounts are unverified. In both cases the snapshot is marked as unverified: `history()`

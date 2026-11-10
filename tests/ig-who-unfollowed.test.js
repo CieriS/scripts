@@ -841,3 +841,48 @@ test("diff: after an unchecked scan, accounts that come back are still treated a
   assert.deepEqual(names(d.newFollowers), []);
   assert.deepEqual(names(d.reappeared), ["user2"]);
 });
+
+/* ------------------------------------------------------ closed accounts --- */
+
+/** Second scan after user1 and user2 closed their accounts: their checks answer 404 (seen live). */
+async function scanAfterClosures(before, after) {
+  const instagram = new FakeInstagram(before);
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  Object.assign(instagram, after);
+  instagram.override = (url) => (/\/show\/[12]\/$/.test(url.pathname) ? { status: 404, body: {} } : null);
+  await page.IU.scan();
+  return page;
+}
+
+test("diff: a closed account is listed as vanished, not as someone I unfollowed or who unfollowed me", async () => {
+  // user1: I followed it, it did not follow me. user2: it followed me, I did not follow it.
+  // user3 really stopped following me; I really unfollowed user4.
+  const page = await scanAfterClosures(
+    { following: [user(1), user(4), user(5)], followers: [user(2), user(3), user(5)] },
+    { following: [user(5)], followers: [user(5)] }
+  );
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.vanished).sort(), ["user1", "user2"]);
+  assert.deepEqual(names(d.youUnfollowed), ["user4"]);
+  assert.deepEqual(names(d.unfollowedYou), ["user3"]);
+});
+
+test("diff: closed accounts are remembered after a reload and across non-adjacent snapshots", async () => {
+  const page = await scanAfterClosures(
+    { following: [user(1), user(5)], followers: [user(5)] },
+    { following: [user(5)], followers: [user(5)] }
+  );
+  await page.IU.scan(); // a third scan: the closure was recorded in the middle one
+  const snaps = JSON.parse(page.storage.get("__iu_snaps_v2"));
+  ["2026-01-01", "2026-01-02", "2026-01-03"].forEach((day, i) => { snaps[i].t = `${day}T10:00:00.000Z`; });
+  page.storage.set("__iu_snaps_v2", JSON.stringify(snaps));
+
+  const reloaded = loadScript({ storage: page.storage });
+  const d = reloaded.IU.diff(-3, -1);
+
+  assert.deepEqual(names(d.vanished), ["user1"]);
+  assert.deepEqual(names(d.youUnfollowed), []);
+  assert.deepEqual(names(reloaded.IU.diff(-2, -1).vanished), [], "nothing closed between the last two");
+});

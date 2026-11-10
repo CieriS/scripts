@@ -282,34 +282,37 @@
    * friendships/show (una GET, la stessa della pagina profilo): se il legame
    * esiste ancora l'account torna nella lista. Modifica le liste sul posto.
    * unverified: quante assenze sono rimaste senza controllo (0 = tutte certe).
+   * gone: id degli account che non esistono più (la verifica risponde 404).
    */
   async function verifyMissing(prev, following, followers) {
-    if (!prev) return { restored: 0, unverified: 0 };
+    if (!prev) return { restored: 0, unverified: 0, gone: [] };
     const fgIds = new Set(following.map((u) => u.id));
     const frIds = new Set(followers.map((u) => u.id));
     const nameOf = new Map([...prev.fg, ...prev.fr]);
     const missFg = prev.fg.map((p) => p[0]).filter((id) => !fgIds.has(id));
     const missFr = prev.fr.map((p) => p[0]).filter((id) => !frIds.has(id));
     const ids = [...new Set([...missFg, ...missFr])];
-    if (!ids.length) return { restored: 0, unverified: 0 };
+    if (!ids.length) return { restored: 0, unverified: 0, gone: [] };
     if (ids.length > CONFIG.VERIFY_MAX) {
       warn(`${ids.length} account spariti dalle liste rispetto allo scan precedente: troppi da ` +
            `verificare uno per uno, il confronto può contenere falsi positivi.`);
-      return { restored: 0, unverified: ids.length };
+      return { restored: 0, unverified: ids.length, gone: [] };
     }
 
     const blank = (id) => ({ id, username: nameOf.get(id), full_name: "", is_private: null, is_verified: null });
     let restored = 0;
+    const gone = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       ui.status(`verifica ${i + 1}/${ids.length}`);
       const rel = await igFetch(`/api/v1/friendships/show/${id}/`, { soft: true });
       // Account chiuso: l'assenza è vera, e gli altri vanno comunque controllati.
-      if (!rel?.notFound) {
+      if (rel?.notFound) gone.push(id);
+      else {
         if (typeof rel?.following !== "boolean" || typeof rel?.followed_by !== "boolean") {
           warn(`verifica interrotta (Instagram non risponde): ${ids.length - i} account non verificati, ` +
                `il confronto può contenere falsi positivi.`);
-          return { restored, unverified: ids.length - i };
+          return { restored, unverified: ids.length - i, gone };
         }
         if (rel.following && missFg.includes(id)) { following.push(blank(id)); restored++; }
         if (rel.followed_by && missFr.includes(id)) { followers.push(blank(id)); restored++; }
@@ -317,7 +320,7 @@
       if (i < ids.length - 1) await waitFor(rand(CONFIG.DELAY_MIN, CONFIG.DELAY_MAX), "verifica");
     }
     if (restored) log(`${restored} account omessi da Instagram nelle liste e rimessi dopo la verifica.`);
-    return { restored, unverified: 0 };
+    return { restored, unverified: 0, gone };
   }
 
   /* ========================================================================
@@ -328,7 +331,7 @@
   const mySnaps = (uid = getCookie("ds_user_id")) => store.get(K_SNAPS, []).filter(isMine(uid));
 
   /** Salva lo snapshot in forma compatta, per non saturare localStorage. */
-  function pushSnapshot(uid, t, following, followers, partial, unverified) {
+  function pushSnapshot(uid, t, following, followers, partial, unverified, gone) {
     const compact = (list) => list.map((u) => [u.id, u.username]);
     const all = store.get(K_SNAPS, []);
     const mine = all.filter(isMine(uid));
@@ -342,6 +345,7 @@
     // q: assenze rispetto allo scan precedente rimaste senza verifica. 0 = tutte
     // controllate; campo assente = snapshot di prima che la verifica esistesse.
     snap.q = unverified;
+    if (gone.length) snap.g = gone; // account chiusi scoperti in questo scan
     mine.push(snap);
     while (mine.length > CONFIG.MAX_HISTORY) mine.shift();
 
@@ -408,13 +412,13 @@
       const following = await fetchList(userId, "following", onProgress);
       await waitFor(rand(CONFIG.LIST_GAP_MIN, CONFIG.LIST_GAP_MAX), "");
       const followers = await fetchList(userId, "followers", onProgress);
-      const { unverified } = await verifyMissing(mySnaps(userId).at(-1), following, followers);
+      const { unverified, gone } = await verifyMissing(mySnaps(userId).at(-1), following, followers);
 
       const partial = !!expected &&
         (isShort(following.length, expected.following) || isShort(followers.length, expected.followers));
 
       const scannedAt = new Date().toISOString();
-      const { saved, count } = pushSnapshot(userId, scannedAt, following, followers, partial, unverified);
+      const { saved, count } = pushSnapshot(userId, scannedAt, following, followers, partial, unverified, gone);
       LAST = buildResult(scannedAt, following, followers, { expected, partial });
       OPENED.clear();
 
@@ -444,8 +448,9 @@
    * già in uno di quelli era solo stato omesso da Instagram in A: "ricomparso".
    * Vale solo se le assenze di A non erano state verificate: dopo uno scan
    * verificato chi torna se n'era andato davvero, ed è un cambiamento vero.
+   * closed: id degli account risultati chiusi fra A e B (campo g degli snapshot).
    */
-  function computeDiff(A, B, earlier = []) {
+  function computeDiff(A, B, earlier = [], closed = B.g || []) {
     const nameOf = new Map([...A.fg, ...A.fr, ...B.fg, ...B.fr]);
     const setOf = (pairs) => new Set(pairs.map((p) => p[0]));
 
@@ -461,12 +466,18 @@
     // follower MA anche dalla lista di chi segui — e tu non hai fatto unfollow —
     // di solito l'account è stato disattivato/eliminato, o ti ha bloccato.
     // Se sparisce solo dai follower e tu continui a seguirla, ti ha tolto il follow.
+    // Un account che la verifica ha trovato chiuso è "sparito" in ogni caso,
+    // anche se il legame era in una sola direzione.
+    const closedIds = new Set(closed);
     const unfollowedYou = [];
     const vanished = [];
     const vanishedIds = new Set();
     for (const id of goneFromFollowers) {
-      if (aFg.has(id) && !bFg.has(id)) { vanished.push(mk(id)); vanishedIds.add(id); }
+      if (closedIds.has(id) || (aFg.has(id) && !bFg.has(id))) { vanished.push(mk(id)); vanishedIds.add(id); }
       else unfollowedYou.push(mk(id));
+    }
+    for (const id of aFg) {
+      if (closedIds.has(id) && !bFg.has(id) && !vanishedIds.has(id)) { vanished.push(mk(id)); vanishedIds.add(id); }
     }
 
     const past = A.q === 0 && !A.p ? [] : earlier;
@@ -515,7 +526,8 @@
     }
     if (A.t > B.t) [A, B] = [B, A]; // sempre dal più vecchio al più recente
 
-    const res = computeDiff(A, B, snaps.filter((x) => x.t < A.t));
+    const res = computeDiff(A, B, snaps.filter((x) => x.t < A.t),
+      [B, ...snaps.filter((x) => x.t > A.t && x.t < B.t)].flatMap((x) => x.g || []));
 
     const keep = keepSet();
     const show = (label, list, color) => {
