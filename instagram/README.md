@@ -49,7 +49,8 @@ Comments and console messages are in Italian.
 | In `IU.diff()` | Meaning |
 |---|---|
 | Ti hanno tolto il follow | Was among your followers, no longer is |
-| Spariti | Gone from your followers *and* from the accounts you follow, or found closed by the check after the scan: usually a closed account or a block |
+| Spariti | Gone from your followers *and* from the accounts you follow, or found closed by the check after the scan: a closed or deactivated account, or a block |
+| Riattivati | Found closed by an earlier scan and back in the lists: the account was only deactivated for a while and the relationship stayed, so it is not a new follower or a new follow |
 | Nuovi follower | Follows you now, did not at the previous scan |
 | Hai smesso / iniziato a seguire | Your own changes |
 
@@ -70,8 +71,11 @@ follows. Two checks prevent that:
 - **After each scan**, every account that was in the previous snapshot and is now missing is
   checked one by one with the same read-only request the profile page makes. If the
   relationship still exists the account is put back. An account that no longer exists (the
-  request answers HTTP 404, seen live) is a real absence: it is saved in the snapshot as
-  closed and listed under "spariti", and the checks go on with the others. With
+  request answers HTTP 404, seen live) is saved in the snapshot as closed and listed under
+  "spariti", and the checks go on with the others. A deactivated account answers the same
+  way and can come back with the relationship intact (seen live: a follower of a private
+  profile came back without a new request): when it reappears it is listed under
+  "riattivati", not as a new follower or a new follow. With
   more than 30 missing accounts the check is skipped (that is a truncated list, not a few
   gaps). If Instagram refuses a check, the scan stops checking, completes, and says how many
   accounts are unverified. In both cases the snapshot is marked as unverified: `history()`
@@ -81,7 +85,7 @@ follows. Two checks prevent that:
   counted as reappeared and not listed as new, but only when the absences of the previous
   snapshot were not all checked (unverified, incomplete, or saved before the checks existed).
   After a fully checked scan the account had really left: coming back is a new follower or a
-  new follow.
+  new follow, unless it had been found closed (see "riattivati" above).
 
 The first scan has nothing to compare with, so nothing is checked: an account Instagram leaves
 out of the followers list is reported as not following back until a later scan lists it.

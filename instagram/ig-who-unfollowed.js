@@ -449,6 +449,10 @@
    * Vale solo se le assenze di A non erano state verificate: dopo uno scan
    * verificato chi torna se n'era andato davvero, ed è un cambiamento vero.
    * closed: id degli account risultati chiusi fra A e B (campo g degli snapshot).
+   * Un account trovato chiuso fino ad A e ora di nuovo nelle liste era solo
+   * disattivato: il legame è rimasto, non è un follow nuovo ("riattivato").
+   * Visto dal vivo: con il profilo privato tornare da follower richiederebbe
+   * una richiesta accettata, che non c'era.
    */
   function computeDiff(A, B, earlier = [], closed = B.g || []) {
     const nameOf = new Map([...A.fg, ...A.fr, ...B.fg, ...B.fr]);
@@ -480,11 +484,19 @@
       if (closedIds.has(id) && !bFg.has(id) && !vanishedIds.has(id)) { vanished.push(mk(id)); vanishedIds.add(id); }
     }
 
+    // Chiusi in uno snapshot fino ad A e mai più ricomparsi fino ad A compreso.
+    const wasClosed = new Set();
+    for (const s of [...earlier, A]) {
+      for (const p of [...s.fr, ...s.fg]) wasClosed.delete(p[0]);
+      for (const id of s.g || []) wasClosed.add(id);
+    }
+
     const past = A.q === 0 && !A.p ? [] : earlier;
     const seenFr = new Set(past.flatMap((s) => s.fr.map((p) => p[0])));
     const seenFg = new Set(past.flatMap((s) => s.fg.map((p) => p[0])));
-    const newFr = [...bFr].filter((id) => !aFr.has(id));
-    const newFg = [...bFg].filter((id) => !aFg.has(id));
+    const newFr = [...bFr].filter((id) => !aFr.has(id) && !wasClosed.has(id));
+    const newFg = [...bFg].filter((id) => !aFg.has(id) && !wasClosed.has(id));
+    const back = [...bFr, ...bFg].filter((id) => wasClosed.has(id) && !aFr.has(id) && !aFg.has(id));
 
     return {
       from: A.t,
@@ -499,6 +511,7 @@
       newFollowers: newFr.filter((id) => !seenFr.has(id)).map(mk),
       youUnfollowed: [...aFg].filter((id) => !bFg.has(id) && !vanishedIds.has(id)).map(mk),
       youFollowed: newFg.filter((id) => !seenFg.has(id)).map(mk),
+      reactivated: [...new Set(back)].map(mk),
       // Mancavano solo nello snapshot A: non sono cambiamenti veri.
       reappeared: [...new Set([...newFr.filter((id) => seenFr.has(id)), ...newFg.filter((id) => seenFg.has(id))])].map(mk),
       delta: { followers: bFr.size - aFr.size, following: bFg.size - aFg.size },
@@ -547,7 +560,8 @@
     log(`follower: ${res.delta.followers >= 0 ? "+" : ""}${res.delta.followers}   ` +
         `seguiti: ${res.delta.following >= 0 ? "+" : ""}${res.delta.following}`);
     show("❌ TI HANNO TOLTO IL FOLLOW", res.unfollowedYou, "#e05252");
-    show("👻 spariti (account chiuso o ti hanno bloccato)", res.vanished, "#c0a050");
+    show("👻 spariti (account chiuso o disattivato, o ti hanno bloccato)", res.vanished, "#c0a050");
+    show("🔄 riattivati (account disattivato per un periodo: il follow è rimasto)", res.reactivated, "#888");
     show("✅ nuovi follower", res.newFollowers, "#5cb85c");
     show("↩️  hai smesso di seguire", res.youUnfollowed, "#888");
     show("➡️  hai iniziato a seguire", res.youFollowed, "#888");
@@ -692,7 +706,8 @@ ${r.partial || d?.unreliable ? `<div class="sub">⚠️ Liste incomplete o non v
 <div class="stat"><b>${targets.length}</b><span>non ti seguono</span></div>
 </div>
 ${d ? section("❌ Ti hanno tolto il follow", notKept(d.unfollowedYou), "gone") : ""}
-${d ? section("👻 Spariti (account chiuso o ti hanno bloccato)", notKept(d.vanished), "") : ""}
+${d ? section("👻 Spariti (account chiuso o disattivato, o ti hanno bloccato)", notKept(d.vanished), "") : ""}
+${d ? section("🔄 Riattivati (il follow è rimasto)", d.reactivated, "") : ""}
 ${d ? section("✅ Nuovi follower", d.newFollowers, "") : ""}
 ${section("Non ti seguono", targets, "")}
 ${section("Ti seguono ma non li segui", r.youDontFollowBack, "")}

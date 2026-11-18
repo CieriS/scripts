@@ -886,3 +886,56 @@ test("diff: closed accounts are remembered after a reload and across non-adjacen
   assert.deepEqual(names(d.youUnfollowed), []);
   assert.deepEqual(names(reloaded.IU.diff(-2, -1).vanished), [], "nothing closed between the last two");
 });
+
+/* --------------------------------------------------- reactivated accounts --- */
+
+/** Three scans: user1 deactivates its account (404) in the second, comes back in the third. */
+async function deactivateAndReturn(lists) {
+  const instagram = new FakeInstagram(lists);
+  const page = loadScript({ instagram });
+  await page.IU.scan();
+  const without = (list) => list.filter((u) => u.pk !== 1);
+  Object.assign(instagram, { following: without(lists.following), followers: without(lists.followers) });
+  instagram.override = (url) => (url.pathname.endsWith("/show/1/") ? { status: 404, body: {} } : null);
+  await page.IU.scan();
+  Object.assign(instagram, lists);
+  instagram.override = null;
+  await page.IU.scan();
+  return page;
+}
+
+test("diff: a follower back from a deactivated account is reactivated, not a new follower (seen live)", async () => {
+  // A private profile: a real unfollow followed by a new follow would need an accepted request.
+  const page = await deactivateAndReturn({ following: [user(2)], followers: [user(1), user(2)] });
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.reactivated), ["user1"]);
+  assert.deepEqual(names(d.newFollowers), []);
+  assert.deepEqual(names(d.reappeared), []);
+  assert.ok(page.said("log", /riattivati/));
+});
+
+test("diff: an account I followed that comes back is not a new follow of mine", async () => {
+  const page = await deactivateAndReturn({ following: [user(1), user(2)], followers: [user(1)] });
+  const d = page.IU.diff();
+
+  assert.deepEqual(names(d.reactivated), ["user1"]);
+  assert.deepEqual(names(d.youFollowed), []);
+  assert.deepEqual(names(d.newFollowers), []);
+});
+
+test("diff: an account closed, back, then gone and back again by a real follow is new", async () => {
+  // user1: closed in the 2nd snapshot, back in the 3rd, gone (verified) in the 4th, back in the 5th.
+  const snap = (t, ids, g) => ({ t, u: "100", v: 2, q: 0, ...(g ? { g } : {}), fg: [], fr: ids.map((i) => [String(i), `user${i}`]) });
+  const storage = new Map([["__iu_snaps_v2", JSON.stringify([
+    snap("2026-01-01T10:00:00.000Z", [1, 2]),
+    snap("2026-01-02T10:00:00.000Z", [2], ["1"]),
+    snap("2026-01-03T10:00:00.000Z", [1, 2]),
+    snap("2026-01-04T10:00:00.000Z", [2]),
+    snap("2026-01-05T10:00:00.000Z", [1, 2]),
+  ])]]);
+  const d = loadScript({ storage }).IU.diff();
+
+  assert.deepEqual(names(d.newFollowers), ["user1"]);
+  assert.deepEqual(names(d.reactivated), []);
+});
